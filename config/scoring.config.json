@@ -1,0 +1,60 @@
+{
+  "_readme": "Satu-satunya tempat angka scoring boleh ditulis. Setiap field bernilai null WAJIB diisi tim berdasarkan analisa, bukan tebakan — lihat SCORING_LOGIC.md untuk rumus dan konteksnya. src/scoring/config.js menolak jalan selama masih ada null di sini. Saat mengisi angka, catat perubahannya di SCORING_LOGIC.md bagian 'Riwayat Perubahan Angka'.",
+
+  "normalisasi": {
+    "volume": { "lookbackDays": null, "_ref": "SCORING_LOGIC.md §1, contoh umum 20 hari" },
+    "brokerFlow": { "lookbackDays": null, "_ref": "SCORING_LOGIC.md §1" },
+    "foreignInflow": { "lookbackDays": null, "_ref": "SCORING_LOGIC.md §1" }
+  },
+
+  "volumeAnomaly": {
+    "smaWindowDays": null,
+    "significantRatioThreshold": null,
+    "_ref": "SCORING_LOGIC.md §2.1 & §3 — Volume Ratio = Volume Hari Ini / SMA(n); signifikan jika > Y"
+  },
+
+  "brokerFlow": {
+    "significantConcentrationPct": null,
+    "concentrationBasis": null,
+    "_basisOptions": ["value_idr", "lot"],
+    "_ref": "SCORING_LOGIC.md §3 — konsentrasi broker tunggal melebihi Z persen dari total. Tim wajib pilih basis: nilai rupiah (bval/sval/nval) atau lot (blot/slot/nlot) — hasilnya beda untuk saham berharga tinggi, lihat docs/API_FINDINGS.md §3."
+  },
+
+  "antiNoiseFilter": {
+    "minMarketCapBillionIdr": null,
+    "_ref": "SCORING_LOGIC.md §3 — threshold minimum likuiditas/market cap sebelum output ranking. Satuan: miliar IDR, sama seperti parameter min_mcap_billion di endpoint top-changes."
+  },
+
+  "newsSentiment": {
+    "timeDecayBuckets": [
+      { "maxHours": 24, "label": "harian", "weight": null },
+      { "maxHours": 72, "label": "beberapa_hari_terakhir", "weight": null },
+      { "maxHours": 168, "label": "mingguan", "weight": null }
+    ],
+    "beyondBucketsWeight": 0,
+    "multiArticleAggregation": null,
+    "_multiArticleAggregationOptions": ["average", "max"],
+    "_ref": "SCORING_LOGIC.md §5 — Skor_News = Base Sentiment Score x Bobot Waktu. Base Sentiment Score diturunkan dari tags/dimension berita (lihat docs/API_FINDINGS.md §1.4), bukan LLM."
+  },
+
+  "weightedScoring": {
+    "weights": {
+      "volume": null,
+      "brokerFlow": null,
+      "news": null,
+      "foreignFlow": null
+    },
+    "_ref": "SCORING_LOGIC.md §4 — W1..W4 harus berjumlah 100. Urutan besar-kecil harus mencerminkan keyakinan tim terhadap tiap sinyal dan bisa dijelaskan ke juri."
+  },
+
+  "tieBreaker": {
+    "rule": null,
+    "_ruleOptions": ["higher_volume_ratio", "higher_broker_concentration", "more_recent_news", "alphabetical_symbol"],
+    "_ref": "SCORING_LOGIC.md §6 — belum diisi tim"
+  },
+
+  "output": {
+    "topN": null,
+    "_ref": "CLAUDE.md §7 — jumlah saham per pengiriman dibatasi, contoh top 5-10"
+  }
+}

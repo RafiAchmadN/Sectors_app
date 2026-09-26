@@ -1,0 +1,15 @@
+# Secrets — WAJIB, jangan pernah commit API key (CLAUDE.md §10)
+.env
+.env.*
+!.env.example
+*.key
+credentials*.json
+service-account*.json
+
+# Output run
+out/
+node_modules/
+npm-debug.log*
+
+# OS
+.DS_Store

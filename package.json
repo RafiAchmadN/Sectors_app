@@ -1,0 +1,13 @@
+{
+  "name": "sectors-watchlist-workflow",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Workflow otomatis ranking watchlist harian saham IDX berbasis Sectors Financial API v2 — Sectors Hackathon 2026, track Automation and Workflows.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "verify:api": "node scripts/verify-api.js",
+    "n8n:test": "node scripts/n8n-client.js",
+    "test": "node --test src/scoring/__tests__/*.test.js"
+  }
+}
