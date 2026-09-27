@@ -20,6 +20,11 @@
     "_ref": "SCORING_LOGIC.md §3 — signifikan jika satu broker > 20% dari total aktivitas (buy+sell) hari itu. Basis nilai rupiah dipilih karena mencerminkan aliran modal riil dan sebanding lintas saham berbeda harga, sesuai konvensi 'top broker net buy/sell' yang umum dipakai analis retail Indonesia (docs/API_FINDINGS.md §3)."
   },
 
+  "anomalyDetection": {
+    "zScoreThreshold": 1.5,
+    "_ref": "SCORING_LOGIC.md §3b (27 Sep 2026) — |Z| >= 1.5 terhadap histori saham itu sendiri (broker flow & foreign flow; volume tetap pakai threshold rasio existing di volumeAnomaly.significantRatioThreshold). Dipakai untuk badge anomali di reasoning text, BUKAN bagian formula Skor Akhir §4."
+  },
+
   "antiNoiseFilter": {
     "minMarketCapBillionIdr": 5000,
     "_ref": "SCORING_LOGIC.md §3 — disamakan dengan min_mcap_billion default di endpoint top-changes (config/sectors-endpoints.js) supaya kandidat dari jalur most-traded (yang TIDAK punya filter ini di sisi API) diperlakukan setara dan tidak lolos hanya karena datang dari jalur berbeda."

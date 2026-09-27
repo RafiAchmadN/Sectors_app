@@ -19,6 +19,25 @@ const FACTOR_LABELS = {
 };
 
 /**
+ * SCORING_LOGIC.md §3b (27 Sep 2026) — badge anomali di reasoning text. `anomalies` opsional
+ * supaya fungsi ini backward-compatible dengan caller lama yang belum mengisi field ini.
+ * @param {{volume?:boolean, brokerFlow?:boolean, foreignFlow?:boolean}} [anomalies]
+ */
+const ANOMALY_LABELS = {
+  volume: 'volume transaksi jauh di atas kebiasaan',
+  brokerFlow: 'aktivitas broker jauh di luar pola biasa saham ini',
+  foreignFlow: 'aliran dana asing jauh di luar pola biasa saham ini',
+};
+function describeAnomalies(anomalies) {
+  if (!anomalies) return '';
+  const active = Object.entries(anomalies)
+    .filter(([, detected]) => detected)
+    .map(([factor]) => ANOMALY_LABELS[factor]);
+  if (!active.length) return '';
+  return ' 🚨 Anomali terdeteksi: ' + active.join(', ') + '.';
+}
+
+/**
  * Faktor dengan kontribusi tertimbang terbesar terhadap Skor Akhir — dipakai sebagai
  * "[alasan utama berdasarkan skor tertinggi]" di template mode simple.
  *
@@ -45,12 +64,13 @@ export function dominantFactor(scores, weights) {
  * @param {number} p.priceChangePct - dari priceChange.js
  * @param {{volume:number, brokerFlow:number, news:number, foreignFlow:number}} p.scores
  * @param {{volume:number, brokerFlow:number, news:number, foreignFlow:number}} p.weights
+ * @param {{volume?:boolean, brokerFlow?:boolean, foreignFlow?:boolean}} [p.anomalies] - SCORING_LOGIC.md §3b
  */
-export function buildSimpleReasoning({ companyName, priceChangePct, scores, weights }) {
+export function buildSimpleReasoning({ companyName, priceChangePct, scores, weights, anomalies }) {
   const arah = priceChangePct >= 0 ? 'naik' : 'turun';
   const pct = Math.abs(priceChangePct).toFixed(2);
   const factor = dominantFactor(scores, weights);
-  return `${companyName} ${arah} ${pct}% didukung oleh ${FACTOR_LABELS[factor]}.`;
+  return `${companyName} ${arah} ${pct}% didukung oleh ${FACTOR_LABELS[factor]}.${describeAnomalies(anomalies)}`;
 }
 
 /**
@@ -67,6 +87,8 @@ export function buildSimpleReasoning({ companyName, priceChangePct, scores, weig
  * @param {{topAccumulator: {broker_code:string, netShare:number}|null, topDistributor: {broker_code:string, netShare:number}|null}} p.brokerConcentration
  * @param {{title: string, source: string}[]} p.relatedNews - artikel yang dipakai menghitung Skor_News
  * @param {number} p.netForeignInflowIdr
+ * @param {{volume?:boolean, brokerFlow?:boolean, foreignFlow?:boolean}} [p.anomalies] - SCORING_LOGIC.md §3b
+ * @param {{brokerFlowZScore?:number, foreignFlowZScore?:number}} [p.anomalyDetails]
  * @returns {string}
  */
 export function buildDetailReasoning({
@@ -79,22 +101,27 @@ export function buildDetailReasoning({
   brokerConcentration,
   relatedNews,
   netForeignInflowIdr,
+  anomalies = {},
+  anomalyDetails = {},
 }) {
   const lines = [
     `${companyName} (${symbol}) — Skor Akhir: ${finalScore.toFixed(2)}`,
-    `- Volume: skor ${scores.volume.toFixed(1)} | volume hari ini ${todayVolume.toLocaleString('id-ID')} | rasio thd SMA ${volumeRatio.toFixed(2)}x`,
+    `- Volume: skor ${scores.volume.toFixed(1)} | volume hari ini ${todayVolume.toLocaleString('id-ID')} | rasio thd SMA ${volumeRatio.toFixed(2)}x` +
+      (anomalies.volume ? ' 🚨 ANOMALI' : ''),
     `- Broker flow: skor ${scores.brokerFlow.toFixed(1)} | ` +
       (brokerConcentration.topAccumulator
         ? `akumulasi terbesar oleh ${brokerConcentration.topAccumulator.broker_code} (${brokerConcentration.topAccumulator.netShare.toFixed(1)}%)`
         : 'tidak ada akumulasi dominan') +
       (brokerConcentration.topDistributor
         ? `, distribusi terbesar oleh ${brokerConcentration.topDistributor.broker_code} (${Math.abs(brokerConcentration.topDistributor.netShare).toFixed(1)}%)`
-        : ''),
+        : '') +
+      (anomalies.brokerFlow ? ` 🚨 ANOMALI (Z=${anomalyDetails.brokerFlowZScore?.toFixed(2)})` : ''),
     `- Berita: skor ${scores.news.toFixed(2)} | ` +
       (relatedNews.length
         ? relatedNews.map((n) => `"${n.title}" (${n.source})`).join('; ')
         : 'tidak ada berita relevan dalam window waktu'),
-    `- Foreign flow: skor ${scores.foreignFlow.toFixed(1)} | net foreign inflow hari ini Rp${netForeignInflowIdr.toLocaleString('id-ID')}`,
+    `- Foreign flow: skor ${scores.foreignFlow.toFixed(1)} | net foreign inflow hari ini Rp${netForeignInflowIdr.toLocaleString('id-ID')}` +
+      (anomalies.foreignFlow ? ` 🚨 ANOMALI (Z=${anomalyDetails.foreignFlowZScore?.toFixed(2)})` : ''),
   ];
   return lines.join('\n');
 }

@@ -64,6 +64,35 @@ n = (belum diisi). Catatan: RSI tidak dipakai pada versi ini, cukup SMA dan pric
 
 ---
 
+## 3b. Deteksi Anomali (Ditambahkan 27 Sep 2026, Keputusan Tim)
+
+**Konteks:** setelah pipeline penuh (Tahap 1-5) selesai dan teruji, tim menilai reasoning text per saham masih terasa generik ("naik X% didukung Y") dan kurang menonjolkan diferensiator utama produk (sinyal broker flow, CLAUDE.md §1). Fitur ini menjawab itu dengan menandai secara eksplisit kapan suatu sinyal BENAR-BENAR tidak biasa untuk saham itu sendiri, bukan cuma "di atas ambang flat yang sama untuk semua saham" seperti §3 di atas.
+
+**Beda dengan §3 & §4:** deteksi anomali ini **terpisah** dari Skor Akhir — tidak mengubah formula weighted scoring di §4 sama sekali. Ini murni lapisan narasi tambahan di reasoning text (§7), supaya sinyal yang sama tidak dihitung dua kali (sekali sebagai skor, sekali lagi sebagai badge).
+
+**Metode:** **Z-score** terhadap histori saham itu SENDIRI (konsisten dengan prinsip §1: dibanding histori sendiri, bukan saham lain), diadaptasi dari pendekatan anomaly detection teknikal yang sebelumnya dipakai tim untuk crypto screening. Dipilih dibanding threshold flat (seperti Z=20% broker flow di §3) karena Z-score otomatis menyesuaikan ke baseline masing-masing saham — saham yang secara alami punya broker flow terkonsentrasi tidak akan terus-menerus ditandai "anomali" tiap hari, hanya saat benar-benar menyimpang dari kebiasaannya sendiri.
+
+```
+Z = (Nilai Hari Ini - Rata-rata Histori) / Standar Deviasi Histori
+Anomali jika |Z| >= ambang
+```
+
+Histori yang dipakai untuk baseline SENGAJA TIDAK termasuk hari ini sendiri (beda dari array di §1 yang sengaja memasukkan hari ini demi penempatan skor 0-100 yang benar) — baseline anomali harus murni "pola sebelum hari ini".
+
+**Faktor yang dideteksi:**
+- **Volume**: pakai ambang rasio yang SUDAH ADA di §2.1/§3 (Y=1.5x), tidak dibuat ulang jadi Z-score — fungsi `isVolumeSignificant()` sudah ditulis sejak awal proyek tapi belum pernah benar-benar dipanggil di pipeline scoring sampai perbaikan ini.
+- **Broker flow**: Z-score dari net value harian (basis sama dengan §3, `concentrationBasis`) terhadap histori `normalisasi.brokerFlow.lookbackDays` hari SEBELUM hari ini.
+- **Foreign flow**: Z-score dari `net_foreign_inflow` harian terhadap histori `normalisasi.foreignInflow.lookbackDays` hari sebelum hari ini.
+- News TIDAK didetect anomalinya di tahap ini — skalanya sudah -1..1 lewat time decay (§5), konsep "anomali" kurang relevan untuk sentimen berita dibanding sinyal numerik broker/foreign/volume.
+
+**Ambang Z:** **|Z| >= 1.5**, dipilih konsisten dengan filosofi sensitivitas yang sama dengan Y=1.5 di §2.1 (cukup sensitif menangkap penyimpangan sejak dini, risiko false-positive diterima karena ini cuma badge naratif tambahan, bukan bagian keputusan skor/filter).
+
+**Kasus tepi:** kalau histori baseline kurang dari 1 hari (saham baru listing / data belum cukup), TIDAK ditandai anomali (bukan dianggap otomatis anomali) — belum ada dasar pembanding yang valid. Kalau histori baseline ada tapi nilainya selalu sama persis (`stdDev=0`) dan hari ini beda, itu DITANDAI anomali (kasus paling jelas: pola yang biasanya konstan tiba-tiba berubah).
+
+**Implementasi:** `src/scoring/anomalyDetection.js` (`computeZScore`, `isAnomaly`), dipanggil dari `scoreCandidate()` di `src/scoring/index.js`, badge muncul di `simpleReasoning` (emoji 🚨 + daftar faktor) dan `detailReasoning` (nilai Z eksplisit) lewat `src/scoring/reasoningText.js`.
+
+---
+
 ## 4. Weighted Scoring
 
 ```
@@ -151,3 +180,4 @@ Catat setiap perubahan pada tabel berikut. Jangan menghapus riwayat lama, cukup 
 | 2026-09-27 | `config/sectors-endpoints.js` — rentang default `broker-summary` | -5 hari kalender | -30 hari kalender | Perlu histori cukup untuk lookback normalisasi broker flow 20 hari bursa (§1); biaya credit endpoint ini flat 1 credit berapa pun rentang tanggal, jadi tidak menambah biaya | Tim (dibantu Claude Code) |
 | 2026-09-27 | §4 skala Skor_News sebelum masuk weighted scoring | Skor_News dipakai apa adanya di skala -1..1 (tidak dinormalisasi) | Dinormalisasi 0-100 lewat `normalizeNewsScore()` baru (`newsSentiment.js`), dipanggil di `index.js` sebelum `scores.news` dipakai | Ditemukan saat mengisi bobot §4: skala -1..1 membuat bobot W3=15% tidak proporsional (kontribusi riil maksimal cuma ±0.15 poin vs puluhan poin faktor lain). Diperbaiki di hari yang sama supaya bobot benar-benar berarti | Tim (dibantu Claude Code) |
 | 2026-09-27 | §1 lookback normalisasi broker flow | 20 hari bursa | **10 hari bursa** | `npm run verify:api` (real run, 9 credit) membuktikan `/broker-summary/{symbol}/` mengabaikan parameter `start` di luar ~11 hari bursa terakhir (request 30 hari kalender cuma menghasilkan 11 hari data, sedangkan `/foreign-flow/` dengan rentang identik menghasilkan 23 hari) — lihat docs/API_FINDINGS.md §1.3d. 20 hari tidak achievable dari API ini, diturunkan ke 10 (di bawah batas teramati) | Tim (dibantu Claude Code) |
+| 2026-09-27 | §3b Deteksi Anomali (bagian baru) — ambang Z-score | (belum ada) | **\|Z\| >= 1.5**, broker flow & foreign flow, terpisah dari Skor Akhir | Tim sempat pertimbangkan chatbot LLM untuk memperkaya kesimpulan, dibatalkan lagi (tetap CLAUDE.md §3, push satu arah) — diganti Z-score murni statistik, konsisten dengan pendekatan anomaly detection teknikal yang sudah dipakai tim untuk crypto screening sebelumnya. 0 API call tambahan (reuse data yang sudah difetch Tahap 2) | Tim (dibantu Claude Code) |

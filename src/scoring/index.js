@@ -9,9 +9,10 @@
  */
 import { loadScoringConfig } from './config.js';
 import { minMaxNormalize } from './normalize.js';
-import { smaVolume, volumeRatio as calcVolumeRatio } from './volumeAnomaly.js';
+import { smaVolume, volumeRatio as calcVolumeRatio, isVolumeSignificant } from './volumeAnomaly.js';
 import { priceChangeFromOpen } from './priceChange.js';
 import { brokerConcentration } from './brokerFlow.js';
+import { computeZScore, isAnomaly } from './anomalyDetection.js';
 import {
   deriveBaseSentimentFromTags,
   hoursSincePublished,
@@ -100,6 +101,46 @@ export function scoreCandidate(raw, config = loadScoringConfig()) {
     .map((d) => d.net_foreign_inflow);
   const foreignFlowScore = minMaxNormalize(todayForeign, foreignHistory.length ? foreignHistory : [todayForeign]);
 
+  // --- Deteksi Anomali (SCORING_LOGIC.md §3b, 27 Sep 2026, keputusan tim) ---
+  // Terpisah dari Skor Akhir (bukan bagian formula §4) -- murni lapisan narasi tambahan di
+  // reasoning text, supaya sinyal yang sama tidak dihitung dua kali. Z-score dihitung terhadap
+  // histori SEBELUM hari ini saja (today.date dibuang dari baseline), beda dari array yang
+  // dipakai minMaxNormalize di atas (yang sengaja MEMASUKKAN hari ini demi penempatan skor
+  // 0-100 yang benar) -- baseline anomali harus murni "pola sebelum hari ini", bukan termasuk
+  // nilai yang sedang diuji.
+  const volumeAnomalyDetected = isVolumeSignificant(vRatio, config.volumeAnomaly.significantRatioThreshold);
+
+  const netField = config.brokerFlow.concentrationBasis === 'lot' ? 'nlot' : 'nval';
+  const brokerHistoryPrior = raw.brokerSummaryByDate
+    .filter((d) => d.date !== today.date)
+    .slice(-config.normalisasi.brokerFlow.lookbackDays)
+    .map((d) => (d.summary || []).reduce((a, r) => a + (r[netField] || 0), 0));
+  const brokerFlowZ = brokerHistoryPrior.length
+    ? computeZScore(todayNetTotal, brokerHistoryPrior)
+    : { zScore: 0, mean: todayNetTotal, stdDev: 0 };
+  const brokerFlowAnomalyDetected =
+    brokerHistoryPrior.length > 0 && isAnomaly(brokerFlowZ.zScore, config.anomalyDetection.zScoreThreshold);
+
+  const foreignHistoryPrior = raw.foreignFlowHistory
+    .filter((d) => d.date !== today.date)
+    .slice(-config.normalisasi.foreignInflow.lookbackDays)
+    .map((d) => d.net_foreign_inflow);
+  const foreignFlowZ = foreignHistoryPrior.length
+    ? computeZScore(todayForeign, foreignHistoryPrior)
+    : { zScore: 0, mean: todayForeign, stdDev: 0 };
+  const foreignFlowAnomalyDetected =
+    foreignHistoryPrior.length > 0 && isAnomaly(foreignFlowZ.zScore, config.anomalyDetection.zScoreThreshold);
+
+  const anomalies = {
+    volume: volumeAnomalyDetected,
+    brokerFlow: brokerFlowAnomalyDetected,
+    foreignFlow: foreignFlowAnomalyDetected,
+  };
+  const anomalyDetails = {
+    brokerFlowZScore: brokerFlowZ.zScore,
+    foreignFlowZScore: foreignFlowZ.zScore,
+  };
+
   // --- Weighted scoring (SCORING_LOGIC.md §4) ---
   const scores = { volume: volumeScore, brokerFlow: brokerFlowScore, news: newsScore, foreignFlow: foreignFlowScore };
   const finalScore = weightedFinalScore(scores, config.weightedScoring.weights);
@@ -113,6 +154,7 @@ export function scoreCandidate(raw, config = loadScoringConfig()) {
     priceChangePct,
     scores,
     weights: config.weightedScoring.weights,
+    anomalies,
   });
   const detailReasoning = buildDetailReasoning({
     symbol: raw.symbol,
@@ -124,6 +166,8 @@ export function scoreCandidate(raw, config = loadScoringConfig()) {
     brokerConcentration: brokerConc,
     relatedNews: relevantArticles,
     netForeignInflowIdr: todayForeign,
+    anomalies,
+    anomalyDetails,
   });
 
   return {
@@ -138,6 +182,8 @@ export function scoreCandidate(raw, config = loadScoringConfig()) {
     relatedNews: relevantArticles,
     netForeignInflowIdr: todayForeign,
     todayVolume: today.volume,
+    anomalies,
+    anomalyDetails,
     simpleReasoning,
     detailReasoning,
   };
@@ -194,6 +240,7 @@ export function buildDailyWatchlist(rawCandidates, config = loadScoringConfig())
 
 export * from './normalize.js';
 export * from './volumeAnomaly.js';
+export * from './anomalyDetection.js';
 export * from './priceChange.js';
 export * from './brokerFlow.js';
 export * from './newsSentiment.js';

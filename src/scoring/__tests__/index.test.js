@@ -15,6 +15,7 @@ const testConfig = {
   },
   volumeAnomaly: { smaWindowDays: 5, significantRatioThreshold: 1.5 },
   brokerFlow: { significantConcentrationPct: 20, concentrationBasis: 'value_idr' },
+  anomalyDetection: { zScoreThreshold: 1.5 },
   antiNoiseFilter: { minMarketCapBillionIdr: 5000 },
   newsSentiment: {
     timeDecayBuckets: [
@@ -108,6 +109,40 @@ test('scoreCandidate: berita di luar 7 hari diabaikan (SCORING_LOGIC.md §5)', (
   const result = scoreCandidate(candidate, testConfig);
   assert.equal(result.relatedNews.length, 0);
   assert.equal(result.scores.news, 50); // dinormalisasi 0-100 (27 Sep 2026): tanpa berita relevan -> netral/titik tengah = 50, bukan 0
+});
+
+test('scoreCandidate: broker flow yang jauh menyimpang dari histori -> anomalies.brokerFlow true', () => {
+  // 5 hari sebelumnya net broker flow konsisten kecil (~1jt), hari ini melonjak jadi 500jt --
+  // z-score-nya harus jauh di atas threshold 1.5 (SCORING_LOGIC.md §3b).
+  const brokerSummaryByDate = [
+    { date: '2026-09-08', summary: [{ broker_code: 'AA', bval: 1_000_000, sval: 0, nval: 1_000_000, blot: 1, slot: 0, nlot: 1 }] },
+    { date: '2026-09-09', summary: [{ broker_code: 'AA', bval: 1_100_000, sval: 0, nval: 1_100_000, blot: 1, slot: 0, nlot: 1 }] },
+    { date: '2026-09-10', summary: [{ broker_code: 'AA', bval: 900_000, sval: 0, nval: 900_000, blot: 1, slot: 0, nlot: 1 }] },
+    { date: '2026-09-11', summary: [{ broker_code: 'AA', bval: 1_050_000, sval: 0, nval: 1_050_000, blot: 1, slot: 0, nlot: 1 }] },
+    { date: '2026-09-13', summary: [{ broker_code: 'AA', bval: 950_000, sval: 0, nval: 950_000, blot: 1, slot: 0, nlot: 1 }] },
+    { date: '2026-09-14', summary: [{ broker_code: 'YP', bval: 500_000_000, sval: 0, nval: 500_000_000, blot: 500, slot: 0, nlot: 500 }] },
+  ];
+  const result = scoreCandidate(makeCandidate({ brokerSummaryByDate }), testConfig);
+
+  assert.equal(result.anomalies.brokerFlow, true);
+  assert.ok(result.anomalyDetails.brokerFlowZScore > 1.5, `expected z-score > 1.5, got ${result.anomalyDetails.brokerFlowZScore}`);
+  assert.match(result.simpleReasoning, /Anomali terdeteksi/);
+  assert.match(result.simpleReasoning, /aktivitas broker jauh di luar pola biasa/);
+  assert.match(result.detailReasoning, /ANOMALI \(Z=/);
+});
+
+test('scoreCandidate: broker flow konsisten dengan histori -> anomalies.brokerFlow false', () => {
+  const brokerSummaryByDate = [
+    { date: '2026-09-08', summary: [{ broker_code: 'AA', bval: 1_000_000, sval: 0, nval: 1_000_000, blot: 1, slot: 0, nlot: 1 }] },
+    { date: '2026-09-09', summary: [{ broker_code: 'AA', bval: 1_100_000, sval: 0, nval: 1_100_000, blot: 1, slot: 0, nlot: 1 }] },
+    { date: '2026-09-14', summary: [{ broker_code: 'AA', bval: 1_020_000, sval: 0, nval: 1_020_000, blot: 1, slot: 0, nlot: 1 }] },
+  ];
+  const result = scoreCandidate(makeCandidate({ brokerSummaryByDate }), testConfig);
+  assert.equal(result.anomalies.brokerFlow, false);
+  // Catatan: makeCandidate() default sudah punya anomali volume & foreign flow bawaan
+  // (todayVolume jauh di atas baseVolume, foreignFlowHistory cuma 2 titik) -- test ini
+  // fokus HANYA memverifikasi broker flow, bukan absennya semua badge anomali.
+  assert.doesNotMatch(result.simpleReasoning, /aktivitas broker jauh di luar pola biasa/);
 });
 
 test('buildDailyWatchlist: membuang kandidat yang tidak lolos anti-noise filter', () => {
