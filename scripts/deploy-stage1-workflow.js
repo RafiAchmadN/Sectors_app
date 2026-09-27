@@ -14,7 +14,7 @@
  */
 import { upsertWorkflowByName } from './n8n-client.js';
 
-const SECTORS_CRED = { id: '63yoM7RRhjPRheOB', name: 'Sectors API - Header Auth' };
+const SECTORS_CRED = { id: 'TRiYGsteCGY1VLbn', name: 'Sectors API - Header Auth' };
 
 const CODE_NORMALIZE = `
 // Menggabungkan kandidat dari Top Company Movers + Most Traded Stocks, dedupe by symbol.
@@ -43,8 +43,16 @@ function extractFromTopChanges(resp) {
 
 function extractFromMostTraded(resp) {
   const out = [];
+  // BUG NYATA (ditemukan lewat test-execute, 27 Sep 2026): pada hari bursa libur (akhir pekan
+  // atau libur nasional), /v2/most-traded/ TIDAK mengembalikan bentuk { "YYYY-MM-DD": [...] }
+  // seperti biasa, melainkan { message: "No traded stocks found for the given date range." }.
+  // Tanpa pengecekan ini, Object.values(resp) menghasilkan ["No traded stocks..."], lalu
+  // "for (const row of rows)" meng-iterasi KARAKTER string itu satu-satu, menghasilkan
+  // kandidat sampah bersymbol kosong yang bikin enrichment Tahap 2 gagal (404 ke /daily//).
+  if (resp && typeof resp.message === 'string') return out;
   for (const rows of Object.values(resp || {})) {
     for (const row of rows || []) {
+      if (!row || !row.symbol) continue; // jaga-jaga field kosong pada data nyata (CLAUDE.md §8)
       out.push({ symbol: stripSuffix(row.symbol), companyName: row.company_name, source: 'most_traded' });
     }
   }
@@ -105,7 +113,7 @@ const workflow = {
         specifyQuery: 'keypair',
         queryParameters: {
           parameters: [
-            { name: 'n_stock', value: '10' },
+            { name: 'n_stock', value: '5' }, // diturunkan sementara dari 10 (27 Sep 2026) buat hemat credit testing
             { name: 'classifications', value: 'top_gainers' },
             { name: 'periods', value: '1d' },
             { name: 'min_mcap_billion', value: '5000' },
@@ -129,10 +137,34 @@ const workflow = {
         sendQuery: true,
         specifyQuery: 'keypair',
         queryParameters: {
+          // PENTING (ditemukan lewat test-execute nyata, 27 Sep 2026): pakai setZone('utc'),
+          // BUKAN 'Asia/Jakarta'. API Sectors menolak `end` dengan pesan "cannot be in the
+          // future" memakai referensi tanggal UTC, bukan WIB -- di jam 00:00-07:00 WIB (yaitu
+          // 17:00-24:00 UTC hari sebelumnya), tanggal kalender WIB sudah maju sehari lebih dulu
+          // dibanding UTC, jadi request dengan tanggal WIB ditolak sebagai "hari yang belum
+          // terjadi" dari sudut pandang API. Konsisten dengan lastTradingDay()/shiftDate() di
+          // config/sectors-endpoints.js yang MEMANG sudah UTC dari awal.
+          //
+          // PENTING #2 (ditemukan lewat test-execute nyata, 27 Sep 2026): /most-traded/ butuh
+          // TEPAT SATU hari bursa (bukan rentang), dan mengembalikan { message: "No traded
+          // stocks..." } kalau tanggalnya akhir pekan -- lihat CODE_NORMALIZE di atas untuk
+          // penanganan defensifnya. Ekspresi di bawah meniru lastTradingDay() (mundur sampai
+          // bukan Sabtu/Minggu) SUPAYA KASUS INI JARANG TERJADI, tapi TIDAK menangani libur
+          // nasional IDX (batasan yang sama seperti lastTradingDay() aslinya di
+          // config/sectors-endpoints.js) -- itu sebabnya penanganan defensif di CODE_NORMALIZE
+          // tetap wajib ada sebagai jaring pengaman kedua.
           parameters: [
-            { name: 'start', value: "={{ $now.setZone('Asia/Jakarta').toFormat('yyyy-LL-dd') }}" },
-            { name: 'end', value: "={{ $now.setZone('Asia/Jakarta').toFormat('yyyy-LL-dd') }}" },
-            { name: 'n_stock', value: '10' },
+            {
+              name: 'start',
+              value:
+                "={{ (() => { let d = $now.setZone('utc'); while (d.weekday === 6 || d.weekday === 7) d = d.minus({ days: 1 }); return d.toFormat('yyyy-LL-dd'); })() }}",
+            },
+            {
+              name: 'end',
+              value:
+                "={{ (() => { let d = $now.setZone('utc'); while (d.weekday === 6 || d.weekday === 7) d = d.minus({ days: 1 }); return d.toFormat('yyyy-LL-dd'); })() }}",
+            },
+            { name: 'n_stock', value: '5' }, // diturunkan sementara dari 10 (27 Sep 2026) buat hemat credit testing
             { name: 'adjusted', value: 'true' },
           ],
         },
