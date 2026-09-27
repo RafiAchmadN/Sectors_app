@@ -99,6 +99,29 @@ angka net mentah — misalnya `foreign_share` sebagai ukuran seberapa besar pors
 berasal dari asing, terlepas dari arahnya. Belum dipakai di scoring engine saat ini; dicatat di
 sini supaya tim tahu datanya tersedia kalau mau dipertimbangkan.
 
+### 1.3d **[VERIFIED 27 Sep 2026]** `/broker-summary/{symbol}/` mengabaikan `start` di luar ~11 hari bursa terakhir
+Berbeda dari `/daily/` dan `/foreign-flow/` yang menghormati penuh rentang `start`-`end` yang
+diminta, `/broker-summary/{symbol}/` tampaknya punya batas internal tersendiri yang TIDAK
+didokumentasikan di docs.sectors.app.
+
+Bukti: permintaan identik `start=2026-08-26&end=2026-09-25` (rentang 30 hari kalender, ~21-23
+hari bursa) pada dua endpoint berbeda untuk simbol yang sama (BBCA):
+- `/foreign-flow/BBCA/` -> mengembalikan **23 hari** data, dari 2026-08-26 sampai 2026-09-25 (rentang penuh dihormati).
+- `/broker-summary/BBCA/` -> mengembalikan cuma **11 hari** data, dari 2026-09-11 sampai 2026-09-25
+  (hanya ~11 hari bursa TERAKHIR, parameter `start` yang lebih jauh dari itu diabaikan begitu saja
+  tanpa error atau pesan apapun).
+
+**Konsekuensi untuk SCORING_LOGIC.md §1:** lookback normalisasi broker flow SEHARUSNYA tidak
+diasumsikan bisa sepanjang volume/foreign flow (20 hari bursa) hanya dengan memperlebar `start`
+di request — endpoint ini punya plafon sendiri di kisaran ~11 hari terlepas dari apa yang diminta.
+Angka lookback broker flow di `config/scoring.config.json` diturunkan ke **10 hari bursa** (di
+bawah batas yang teramati) supaya `normalisasi.brokerFlow.lookbackDays` selalu benar-benar
+terpenuhi oleh data yang API sanggup berikan, bukan diam-diam terpotong tanpa peringatan (lihat
+riwayat perubahan angka SCORING_LOGIC.md tanggal 27 Sep 2026).
+
+Belum diketahui apakah batas ~11 hari ini konstan atau bervariasi per simbol/kondisi pasar —
+kalau tim menemukan angka berbeda di simbol lain, catat di sini dan sesuaikan lookback-nya.
+
 ### 1.4 Endpoint berita sudah memuat sinyal sentimen — LLM kemungkinan tidak diperlukan
 Response `/v2/news/` mengandung:
 - `tags[]` — sudah memuat label arah pasar seperti `Bullish` dan `Bearish`, di samping label
@@ -151,7 +174,7 @@ Base URL: `https://api.sectors.app/v2`.
 | Endpoint | Path | Parameter penting | Bentuk response |
 |---|---|---|---|
 | Daily Transaction Data | `/daily/{symbol}/` | `start`, `end` — **maksimum rentang 90 hari** | `[ {symbol, date, close, open, high, low, volume, market_cap} ]` |
-| Broker Activity Per Symbol | `/broker-summary/{symbol}/` | `start`, `end` (default end-14d), `broker_code` | per tanggal, per broker: `bfreq, blot, bval, bavg_per_share, sfreq, slot, sval, savg_per_share, nlot, nval, navg_per_share` |
+| Broker Activity Per Symbol | `/broker-summary/{symbol}/` | `start`, `end` (default end-30d, lihat §3), `broker_code` | per tanggal, per broker: `bfreq, blot, bval, bavg_per_share, sfreq, slot, sval, savg_per_share, nlot, nval, navg_per_share` |
 | Top Accum./Distrib. Per Broker | `/broker-activity/{broker_code}/top/` | `start`, `end` (default end-30d), `n_brokers` | `{ foreign: boolean, top_accumulations: [ {rank, symbol, net_idr, buy_idr, sell_idr, foreign_net_idr, foreign_buy_idr, foreign_sell_idr} ], top_distributions: [...] }` — field `foreign_*` tidak ada di docs publik, lihat §1.3c |
 | Daily Net Foreign Inflow | `/foreign-flow/{symbol}/` | `start`, `end` (default end-30d) | `{ symbol, start, end, data: [ {date, net_foreign_inflow, foreign_buy_idr, foreign_sell_idr, foreign_share} ] }` — field selain `net_foreign_inflow` tidak ada di docs publik, lihat §1.3c |
 | News Articles | `/news/` | `symbols`, `start`, `end`, `limit` (maks 30), `offset`, `tags`, `sector`, `sub_sector`, `keyword` | `{ results: [ {title, body, source, thumbnail, timestamp, sector, sub_sector[], tags[], symbols[], dimension{}} ], pagination: {total_count, showing, limit} }` |

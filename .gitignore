@@ -5,6 +5,7 @@
 *.key
 credentials*.json
 service-account*.json
+gen-lang-client-*.json
 
 # Output run
 out/

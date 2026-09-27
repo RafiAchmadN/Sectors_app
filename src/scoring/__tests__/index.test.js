@@ -107,7 +107,7 @@ test('scoreCandidate: berita di luar 7 hari diabaikan (SCORING_LOGIC.md §5)', (
   });
   const result = scoreCandidate(candidate, testConfig);
   assert.equal(result.relatedNews.length, 0);
-  assert.equal(result.scores.news, 0);
+  assert.equal(result.scores.news, 50); // dinormalisasi 0-100 (27 Sep 2026): tanpa berita relevan -> netral/titik tengah = 50, bukan 0
 });
 
 test('buildDailyWatchlist: membuang kandidat yang tidak lolos anti-noise filter', () => {
@@ -129,4 +129,21 @@ test('buildDailyWatchlist: memotong ke topN dan menyertakan disclaimer', () => {
   assert.equal(result.watchlist.length, 2); // topN = 2
   assert.match(result.disclaimer, /BUKAN rekomendasi/);
   assert.ok(result.generatedAt);
+});
+
+test('buildDailyWatchlist: satu kandidat error (mis. open:0 data cacat) TIDAK menggagalkan kandidat lain', () => {
+  // Reproduksi bug nyata (test-execute n8n, 27 Sep 2026, data BEI 25 Sep 2026): PACK dan YULE
+  // punya open:0 pada hari berjalan meski field lain valid -> priceChangeFromOpen() throw.
+  // Sebelum perbaikan, satu kandidat begini menggagalkan SELURUH watchlist harian.
+  const good = makeCandidate({ symbol: 'GOOD' });
+  const badHistory = makeDailyHistory({ todayVolume: 5_000_000, todayClose: 9500 });
+  badHistory[badHistory.length - 1].open = 0; // simulasi bug data nyata
+  const bad = makeCandidate({ symbol: 'BAD', dailyHistory: badHistory });
+
+  const result = buildDailyWatchlist([good, bad], testConfig);
+
+  assert.deepEqual(result.watchlist.map((c) => c.symbol), ['GOOD']);
+  assert.equal(result.skipped.length, 1);
+  assert.equal(result.skipped[0].symbol, 'BAD');
+  assert.match(result.skipped[0].reason, /open tidak boleh 0/);
 });

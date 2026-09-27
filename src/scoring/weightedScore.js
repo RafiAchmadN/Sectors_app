@@ -2,17 +2,18 @@
  * SCORING_LOGIC.md §4 — Weighted Scoring
  *
  * Skor Akhir = (W1 x Skor_Volume) + (W2 x Skor_BrokerFlow) + (W3 x Skor_News) + (W4 x Skor_ForeignFlow)
- * W1+W2+W3+W4 harus 100. Seluruh Skor_X adalah hasil normalisasi 0-100 dari §1 —
- * KECUALI Skor_News, yang skalanya -1..1 x bobot waktu (jadi kira-kira -1..1, bukan 0-100).
- * Ini konsekuensi rumus §5 apa adanya: Skor_News tidak melalui min-max normalize.
- * Team perlu sadar Skor_News beroperasi di skala berbeda dari 3 komponen lain saat
- * menafsirkan Skor Akhir — bukan bug, tapi konsekuensi rumus yang tertulis di SCORING_LOGIC.md.
+ * W1+W2+W3+W4 harus 100. Seluruh Skor_X di sini SUDAH pada skala 0-100 yang sebanding:
+ * volume/brokerFlow/foreignFlow lewat min-max normalize (§1), Skor_News lewat
+ * normalizeNewsScore() (newsSentiment.js) yang memetakan skala mentah -1..1 dari §5
+ * ke 0-100 SEBELUM sampai ke fungsi ini (dipanggil di index.js). DIPERBAIKI 27 Sep 2026 —
+ * sebelumnya Skor_News dipakai apa adanya di skala -1..1 sehingga bobot W3 tidak
+ * proporsional terhadap W1/W2/W4 (lihat riwayat perubahan angka di SCORING_LOGIC.md §4).
  */
 
 /**
  * @param {{volume: number, brokerFlow: number, news: number, foreignFlow: number}} scores
- *   - volume, brokerFlow, foreignFlow: skor ternormalisasi 0-100 (dari normalize.js)
- *   - news: hasil aggregateNewsScore(), skala kira-kira -1..1
+ *   - seluruhnya skor ternormalisasi 0-100 (volume/brokerFlow/foreignFlow dari normalize.js,
+ *     news dari normalizeNewsScore() di newsSentiment.js)
  * @param {{volume: number, brokerFlow: number, news: number, foreignFlow: number}} weights
  *   - config.weightedScoring.weights, harus berjumlah 100
  * @returns {number} Skor Akhir

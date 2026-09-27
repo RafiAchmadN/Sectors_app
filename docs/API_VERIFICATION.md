@@ -2,23 +2,23 @@
 
 File ini dihasilkan otomatis oleh `npm run verify:api`. Jangan diedit manual.
 
-- Dijalankan: 2026-09-26T16:01:23.307Z
+- Dijalankan: 2026-09-26T18:42:34.009Z
 - Tanggal acuan data: 2026-09-25
 - Base URL: `https://api.sectors.app/v2` (v1 sudah dimatikan 2026-05-11, seluruh /v1/* -> HTTP 410)
 - Autentikasi: header `Authorization: <API_KEY>`, raw tanpa prefix `Bearer`
-- Estimasi credit terpakai pada run ini: 7
+- Estimasi credit terpakai pada run ini: 9
 
 ## Ringkasan
 
 | Endpoint | Tahap | Status | Latensi | Jumlah item | Credit |
 |---|---|---|---|---|---|
-| Top Company Movers | 1 | 200 | 475 ms | - | 1 |
-| Most Traded Stocks | 1 | 200 | 172 ms | 10 | 1 |
+| Top Company Movers | 1 | 200 | 1879 ms | - | 1 |
+| Most Traded Stocks | 1 | 200 | 106 ms | 10 | 2 |
 | Daily Transaction Data | 2 | 200 | 111 ms | 28 | 1 |
-| Broker Activity Per Symbol | 2 | 200 | 172 ms | 5 | 1 |
-| Top Accumulations and Distributions Per Broker | 2 | 200 | 3824 ms | 10 | 1 |
-| Daily Net Foreign Inflow | 2 | 200 | 231 ms | 23 | 1 |
-| News Articles | 2 | 200 | 229 ms | 20 | 1 |
+| Broker Activity Per Symbol | 2 | 200 | 153 ms | 11 | 1 |
+| Top Accumulations and Distributions Per Broker | 2 | 200 | 3958 ms | 10 | 2 |
+| Daily Net Foreign Inflow | 2 | 200 | 201 ms | 23 | 1 |
+| News Articles | 2 | 200 | 125 ms | 20 | 1 |
 
 ## Top Company Movers
 
@@ -85,7 +85,7 @@ Tidak ada field kosong/null pada sampel ini.
 
 ## Broker Activity Per Symbol
 
-`https://api.sectors.app/v2/broker-summary/BBCA/?start=2026-09-20&end=2026-09-25`
+`https://api.sectors.app/v2/broker-summary/BBCA/?start=2026-08-26&end=2026-09-25`
 
 Server tidak mengirim header rate limit pada response ini.
 
@@ -95,9 +95,9 @@ Struktur JSON aktual:
 symbol: string
 start: string
 end: string
-data[]: array(5)
+data[]: array(11)
 data[].date: string
-data[].summary[]: array(63)
+data[].summary[]: array(77)
 data[].summary[].broker_code: string
 data[].summary[].bfreq: number
 data[].summary[].blot: number
@@ -124,18 +124,18 @@ data[].summary[].d_savg_per_share: null
 
 Field kosong/null yang ditemukan pada data nyata (wajib ditangani di workflow):
 
-- `data[].summary[].savg_per_share` — kosong pada 21 kemunculan
-- `data[].summary[].f_bfreq` — kosong pada 65 kemunculan
-- `data[].summary[].f_blot` — kosong pada 65 kemunculan
-- `data[].summary[].f_bval` — kosong pada 65 kemunculan
-- `data[].summary[].f_bavg_per_share` — kosong pada 70 kemunculan
-- `data[].summary[].f_sfreq` — kosong pada 65 kemunculan
-- `data[].summary[].f_slot` — kosong pada 65 kemunculan
-- `data[].summary[].f_sval` — kosong pada 65 kemunculan
-- `data[].summary[].f_savg_per_share` — kosong pada 73 kemunculan
-- `data[].summary[].d_savg_per_share` — kosong pada 26 kemunculan
-- `data[].summary[].d_bavg_per_share` — kosong pada 15 kemunculan
-- `data[].summary[].bavg_per_share` — kosong pada 8 kemunculan
+- `data[].summary[].savg_per_share` — kosong pada 43 kemunculan
+- `data[].summary[].f_bfreq` — kosong pada 145 kemunculan
+- `data[].summary[].f_blot` — kosong pada 145 kemunculan
+- `data[].summary[].f_bval` — kosong pada 145 kemunculan
+- `data[].summary[].f_bavg_per_share` — kosong pada 154 kemunculan
+- `data[].summary[].f_sfreq` — kosong pada 145 kemunculan
+- `data[].summary[].f_slot` — kosong pada 145 kemunculan
+- `data[].summary[].f_sval` — kosong pada 145 kemunculan
+- `data[].summary[].f_savg_per_share` — kosong pada 163 kemunculan
+- `data[].summary[].d_savg_per_share` — kosong pada 58 kemunculan
+- `data[].summary[].d_bavg_per_share` — kosong pada 33 kemunculan
+- `data[].summary[].bavg_per_share` — kosong pada 14 kemunculan
 - `data[].summary[].navg_per_share` — kosong pada 1 kemunculan
 
 ## Top Accumulations and Distributions Per Broker

@@ -17,6 +17,7 @@ import {
   hoursSincePublished,
   scoreOneArticle,
   aggregateNewsScore,
+  normalizeNewsScore,
 } from './newsSentiment.js';
 import { passesMarketCapFilter } from './antiNoiseFilter.js';
 import { weightedFinalScore } from './weightedScore.js';
@@ -87,7 +88,10 @@ export function scoreCandidate(raw, config = loadScoringConfig()) {
       config.newsSentiment.beyondBucketsWeight,
     ),
   );
-  const newsScore = aggregateNewsScore(articleScores, config.newsSentiment.multiArticleAggregation);
+  // Skala -1..1 (SCORING_LOGIC.md §5) dinormalisasi ke 0-100 di sini SEBELUM masuk ke
+  // scores{} — supaya sebanding dengan volume/brokerFlow/foreignFlow (§1) dan bobot W3
+  // di §4 berarti proporsional, bukan cuma dekoratif. Lihat komentar normalizeNewsScore().
+  const newsScore = normalizeNewsScore(aggregateNewsScore(articleScores, config.newsSentiment.multiArticleAggregation));
 
   // --- Foreign flow (SCORING_LOGIC.md §1 & §4) ---
   const todayForeign = raw.foreignFlowHistory[raw.foreignFlowHistory.length - 1]?.net_foreign_inflow ?? 0;
@@ -144,11 +148,31 @@ export function scoreCandidate(raw, config = loadScoringConfig()) {
  * anti-noise filter, urutkan pakai tie-breaker, potong ke topN (CLAUDE.md §7),
  * dan tempel disclaimer wajib.
  *
+ * PENTING (ditemukan lewat test-execute nyata di n8n, 27 Sep 2026, data real BEI 25 Sep 2026):
+ * scoreCandidate() SATU kandidat bisa throw pada data nyata yang cacat (mis. `open: 0` pada
+ * saham yang sempat suspensi sebagian hari — ditemukan pada PACK dan YULE) meski field lain
+ * (close/high/low/volume/market_cap) valid. SEBELUM perbaikan ini, satu kandidat cacat
+ * menggagalkan SELURUH watchlist harian (CLAUDE.md mewajibkan workflow "berjalan otonom" —
+ * kegagalan total karena satu saham bermasalah tidak bisa diterima). Sekarang tiap kandidat
+ * di-coba secara independen; yang gagal di-skip dan dicatat di `skipped`, kandidat lain tetap
+ * diproses normal.
+ *
  * @param {CandidateRawData[]} rawCandidates
  * @param {object} [config]
+ * @returns {{generatedAt:string, disclaimer:string, watchlist:object[],
+ *   skipped:{symbol:string, reason:string}[]}}
  */
 export function buildDailyWatchlist(rawCandidates, config = loadScoringConfig()) {
-  const scored = rawCandidates.map((raw) => scoreCandidate(raw, config)).filter((c) => c.passesFilter);
+  const skipped = [];
+  const scored = [];
+  for (const raw of rawCandidates) {
+    try {
+      const result = scoreCandidate(raw, config);
+      if (result.passesFilter) scored.push(result);
+    } catch (e) {
+      skipped.push({ symbol: raw.symbol, reason: e.message });
+    }
+  }
   const ranked = sortRanking(
     scored.map((c) => ({
       ...c,
@@ -164,6 +188,7 @@ export function buildDailyWatchlist(rawCandidates, config = loadScoringConfig())
     generatedAt: new Date().toISOString(),
     disclaimer: disclaimerText(),
     watchlist: ranked.slice(0, config.output.topN),
+    skipped,
   };
 }
 

@@ -31,7 +31,10 @@ export const ENDPOINTS = {
      * min_mcap_billion sekaligus berfungsi sebagai anti-noise filter tahap awal
      * (CLAUDE.md §5 "Sebelum Output Ranking") — nilainya diambil dari config scoring.
      */
-    defaultQuery: { n_stock: 10, classifications: 'top_gainers', periods: '1d', min_mcap_billion: 5000 },
+    // n_stock diturunkan sementara 10 -> 5 (27 Sep 2026) buat menghemat credit selama testing
+    // n8n (sisa credit tim menipis setelah debugging Tahap 2-4) -- BUKAN keputusan final
+    // produk. Naikkan lagi kalau tim mau lebih banyak kandidat per hari di versi rilis.
+    defaultQuery: { n_stock: 5, classifications: 'top_gainers', periods: '1d', min_mcap_billion: 5000 },
     creditCost: (q) =>
       String(q.classifications || 'top_gainers,top_losers').split(',').length *
       String(q.periods || '1d,7d,14d,30d,365d').split(',').length,
@@ -48,7 +51,8 @@ export const ENDPOINTS = {
     label: 'Most Traded Stocks',
     path: () => '/most-traded/',
     // adjusted=true meranking pakai volume x harga, bukan volume mentah -> lebih tahan saham gocap.
-    defaultQuery: ({ date }) => ({ start: date, end: date, n_stock: 10, adjusted: true }),
+    // n_stock diturunkan sementara 10 -> 5 (27 Sep 2026), alasan sama seperti topChanges di atas.
+    defaultQuery: ({ date }) => ({ start: date, end: date, n_stock: 5, adjusted: true }),
     // VERIFIED 26 Sep 2026: header limit-consumption menunjukkan endpoint ini menagih 2 credit,
     // BUKAN 1 seperti asumsi awal dari dokumentasi ("most cost 1"). Lihat docs/API_FINDINGS.md §1.2.
     creditCost: () => 2,
@@ -76,7 +80,14 @@ export const ENDPOINTS = {
     stage: 2,
     label: 'Broker Activity Per Symbol',
     path: ({ symbol }) => `/broker-summary/${symbol}/`,
-    defaultQuery: ({ date }) => ({ start: shiftDate(date, -5), end: date }),
+    // -30 hari kalender diminta (creditCost flat 1 credit berapa pun rentangnya), TAPI
+    // endpoint ini TERBUKTI (verify:api, 27 Sep 2026) mengabaikan `start` di luar ~11 hari
+    // bursa terakhir dan diam-diam memotong ke situ — lihat docs/API_FINDINGS.md §1.3d.
+    // Window -30 hari tetap diminta (tidak ada ruginya) untuk jaga-jaga kalau plafon
+    // internal API ini berubah/berbeda di simbol lain, tapi JANGAN asumsikan hasilnya
+    // akan melebihi ~11 hari — config.normalisasi.brokerFlow.lookbackDays diset 10
+    // (di bawah batas teramati), bukan 20 seperti volume/foreign flow.
+    defaultQuery: ({ date }) => ({ start: shiftDate(date, -30), end: date }),
     creditCost: () => 1,
     // Bentuk: { symbol, start, end, data: [ { date, summary: [ {broker_code, bfreq, blot, bval,
     //   bavg_per_share, sfreq, slot, sval, savg_per_share, nlot, nval, navg_per_share,

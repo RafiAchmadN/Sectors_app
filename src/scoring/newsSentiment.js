@@ -96,3 +96,24 @@ export function aggregateNewsScore(articleScores, aggregation) {
   }
   throw new Error(`aggregateNewsScore: aggregation tidak dikenal "${aggregation}", pakai "average" atau "max"`);
 }
+
+/**
+ * SCORING_LOGIC.md §4 (diisi 27 Sep 2026) — Skor_News hasil aggregateNewsScore() berskala
+ * -1..1, sedangkan volume/brokerFlow/foreignFlow dinormalisasi min-max ke 0-100 (§1). Kalau
+ * skala -1..1 ini langsung dipakai di weightedFinalScore(), bobot W3 (news) di config
+ * jadi TIDAK proporsional terhadap 3 bobot lain (kontribusi maksimalnya cuma sekitar
+ * 1/100 dari kontribusi maksimal faktor lain pada bobot yang sama — lihat riwayat
+ * perubahan angka di SCORING_LOGIC.md tanggal 27 Sep 2026 untuk detail masalahnya).
+ *
+ * Fungsi ini memetakan linear -1..1 -> 0-100 (raw -1 -> 0, 0/netral -> 50, +1 -> 100),
+ * SEBELUM masuk ke weightedFinalScore() maupun dominantFactor() — supaya bobot W3 di
+ * config.weightedScoring.weights.news berarti secara proporsional sama seperti W1/W2/W4,
+ * dan konsisten dengan konvensi normalize.js (nilai netral/tanpa variasi = 50, titik tengah).
+ *
+ * @param {number} rawNewsScore - hasil aggregateNewsScore(), skala -1..1
+ * @returns {number} skor 0-100
+ */
+export function normalizeNewsScore(rawNewsScore) {
+  const score = ((rawNewsScore + 1) / 2) * 100;
+  return Math.max(0, Math.min(100, score));
+}

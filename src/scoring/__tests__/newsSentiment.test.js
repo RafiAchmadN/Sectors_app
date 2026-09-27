@@ -6,6 +6,7 @@ import {
   hoursSincePublished,
   scoreOneArticle,
   aggregateNewsScore,
+  normalizeNewsScore,
 } from '../newsSentiment.js';
 
 test('deriveBaseSentimentFromTags: Bullish -> 1, Bearish -> -1, tanpa tag arah -> 0', () => {
@@ -59,4 +60,12 @@ test('aggregateNewsScore: array kosong -> 0', () => {
 
 test('aggregateNewsScore: aggregation tidak dikenal -> error', () => {
   assert.throws(() => aggregateNewsScore([1], 'median'), /tidak dikenal/);
+});
+
+test('normalizeNewsScore: memetakan skala -1..1 ke 0-100 (SCORING_LOGIC.md §4, diperbaiki 27 Sep 2026)', () => {
+  assert.equal(normalizeNewsScore(-1), 0); // paling negatif -> 0
+  assert.equal(normalizeNewsScore(0), 50); // netral/tidak ada berita -> titik tengah
+  assert.equal(normalizeNewsScore(1), 100); // paling positif -> 100
+  assert.equal(normalizeNewsScore(0.5), 75);
+  assert.equal(normalizeNewsScore(-0.5), 25);
 });
