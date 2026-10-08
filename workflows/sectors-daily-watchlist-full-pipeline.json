@@ -1,0 +1,819 @@
+{
+  "name": "Sectors Daily Watchlist - Stage 1+2+3+4+5 (Full Pipeline + Daily Brief)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 30 7 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "trigger",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.sectors.app/v2/companies/top-changes/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "n_stock",
+              "value": "5"
+            },
+            {
+              "name": "classifications",
+              "value": "top_gainers"
+            },
+            {
+              "name": "periods",
+              "value": "1d"
+            },
+            {
+              "name": "min_mcap_billion",
+              "value": "5000"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-top-changes",
+      "name": "Fetch Top Company Movers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -96,
+        -128
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TRiYGsteCGY1VLbn",
+          "name": "Sectors API - Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://api.sectors.app/v2/most-traded/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "start",
+              "value": "={{ (() => { let d = $now.setZone('utc'); while (d.weekday === 6 || d.weekday === 7) d = d.minus({ days: 1 }); return d.toFormat('yyyy-LL-dd'); })() }}"
+            },
+            {
+              "name": "end",
+              "value": "={{ (() => { let d = $now.setZone('utc'); while (d.weekday === 6 || d.weekday === 7) d = d.minus({ days: 1 }); return d.toFormat('yyyy-LL-dd'); })() }}"
+            },
+            {
+              "name": "n_stock",
+              "value": "5"
+            },
+            {
+              "name": "adjusted",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-most-traded",
+      "name": "Fetch Most Traded Stocks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -96,
+        128
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TRiYGsteCGY1VLbn",
+          "name": "Sectors API - Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Menggabungkan kandidat dari Top Company Movers + Most Traded Stocks, dedupe by symbol.\n// Bentuk response API v2 — lihat docs/API_FINDINGS.md §2 & config/sectors-endpoints.js.\n// PENTING: logika stripSuffix/extract di sini WAJIB disinkronkan manual dengan\n// config/sectors-endpoints.js di repo, karena Code node n8n tidak bisa import file lokal.\n\nfunction stripSuffix(symbol) {\n  return String(symbol || '').split('.')[0].toUpperCase();\n}\n\nfunction extractFromTopChanges(resp) {\n  // PENTING (VERIFIED 26 Sep 2026): field nama perusahaan di endpoint ini adalah `name`,\n  // BUKAN `company_name` seperti di most-traded di bawah — dua endpoint API ini tidak\n  // konsisten penamaannya. Lihat docs/API_FINDINGS.md.\n  const out = [];\n  for (const classification of Object.values(resp || {})) {\n    for (const rows of Object.values(classification || {})) {\n      for (const row of rows || []) {\n        out.push({ symbol: stripSuffix(row.symbol), companyName: row.name, source: 'top_changes' });\n      }\n    }\n  }\n  return out;\n}\n\nfunction extractFromMostTraded(resp) {\n  const out = [];\n  // BUG NYATA (ditemukan lewat test-execute, 27 Sep 2026): pada hari bursa libur (akhir pekan\n  // atau libur nasional), /v2/most-traded/ TIDAK mengembalikan bentuk { \"YYYY-MM-DD\": [...] }\n  // seperti biasa, melainkan { message: \"No traded stocks found for the given date range.\" }.\n  // Tanpa pengecekan ini, Object.values(resp) menghasilkan [\"No traded stocks...\"], lalu\n  // \"for (const row of rows)\" meng-iterasi KARAKTER string itu satu-satu, menghasilkan\n  // kandidat sampah bersymbol kosong yang bikin enrichment Tahap 2 gagal (404 ke /daily//).\n  if (resp && typeof resp.message === 'string') return out;\n  for (const rows of Object.values(resp || {})) {\n    for (const row of rows || []) {\n      if (!row || !row.symbol) continue; // jaga-jaga field kosong pada data nyata (CLAUDE.md §8)\n      out.push({ symbol: stripSuffix(row.symbol), companyName: row.company_name, source: 'most_traded' });\n    }\n  }\n  return out;\n}\n\nfunction dedupeCandidates(lists) {\n  const bySymbol = new Map();\n  for (const c of lists) {\n    if (!bySymbol.has(c.symbol)) {\n      bySymbol.set(c.symbol, { symbol: c.symbol, companyName: c.companyName, sources: [c.source] });\n    } else {\n      const existing = bySymbol.get(c.symbol);\n      if (!existing.sources.includes(c.source)) existing.sources.push(c.source);\n    }\n  }\n  return [...bySymbol.values()];\n}\n\nconst topChanges = $('Fetch Top Company Movers').first().json;\nconst mostTraded = $json;\n\nconst candidates = dedupeCandidates([\n  ...extractFromTopChanges(topChanges),\n  ...extractFromMostTraded(mostTraded),\n]);\n\nreturn candidates.map((c) => ({ json: c }));"
+      },
+      "id": "normalize-candidates",
+      "name": "Normalize & Dedupe Candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Status (26 Sep 2026)\n\n**Selesai:** Tahap 1 (fetch kandidat + dedupe) — kerangka lengkap, siap uji begitu credential \"Sectors API - Header Auth\" diisi API key asli (sekarang masih placeholder).\n\n**Belum dibangun:** Tahap 2 (enrichment per kandidat: daily, broker-summary, foreign-flow, news), scoring engine, output, delivery (Telegram/Sheets), logging.\n\nTemuan penting: `/v2/daily/{symbol}/` mengembalikan ARRAY -> n8n HTTP Request node otomatis MEMECAH jadi banyak item (satu per baris tanggal), bukan satu item per simbol. Tahap 2 wajib pakai node Aggregate/Summarize (group by pairedItem) sebelum lanjut ke scoring, kalau tidak data per-kandidat akan tercampur. Lihat docs/API_FINDINGS.md.\n\nScoring engine sudah jadi & teruji (61 test) di src/scoring/ — tinggal disalin sebagai Code node begitu tahap 2 siap.",
+        "height": 280,
+        "width": 700
+      },
+      "id": "sticky-status",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -416,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "loop-candidates",
+      "name": "Loop Over Candidates",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        512,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.sectors.app/v2/daily/' + $json.symbol + '/' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "start",
+              "value": "={{ $now.setZone('utc').minus({ days: 40 }).toFormat('yyyy-LL-dd') }}"
+            },
+            {
+              "name": "end",
+              "value": "={{ $now.setZone('utc').toFormat('yyyy-LL-dd') }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-daily-s2",
+      "name": "Fetch Daily Transaction Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        832,
+        -224
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TRiYGsteCGY1VLbn",
+          "name": "Sectors API - Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "dailyHistory",
+        "options": {}
+      },
+      "id": "aggregate-daily",
+      "name": "Aggregate Daily History",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        1088,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.sectors.app/v2/broker-summary/' + $json.symbol + '/' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "start",
+              "value": "={{ $now.setZone('utc').minus({ days: 30 }).toFormat('yyyy-LL-dd') }}"
+            },
+            {
+              "name": "end",
+              "value": "={{ $now.setZone('utc').toFormat('yyyy-LL-dd') }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-broker-summary-s2",
+      "name": "Fetch Broker Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        832,
+        32
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TRiYGsteCGY1VLbn",
+          "name": "Sectors API - Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.sectors.app/v2/foreign-flow/' + $json.symbol + '/' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "start",
+              "value": "={{ $now.setZone('utc').minus({ days: 30 }).toFormat('yyyy-LL-dd') }}"
+            },
+            {
+              "name": "end",
+              "value": "={{ $now.setZone('utc').toFormat('yyyy-LL-dd') }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-foreign-flow-s2",
+      "name": "Fetch Foreign Flow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        832,
+        272
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TRiYGsteCGY1VLbn",
+          "name": "Sectors API - Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Menggabungkan hasil 3 panggilan enrichment (daily/broker-summary/foreign-flow) untuk SATU\n// kandidat (iterasi loop saat ini) menjadi satu object CandidateRawData persis seperti kontrak\n// scoreCandidate() di src/scoring/index.js — supaya nanti tinggal disalin sebagai input scoring\n// Code node tanpa perlu mapping ulang field.\n//\n// Node ini hanya punya SATU koneksi masuk nyata (dari \"Fetch Foreign Flow\"); dua sumber data\n// lain diambil via $('Nama Node') karena keduanya jalan sebagai cabang paralel tanpa koneksi\n// keluar langsung ke sini (pola yang sama dipakai CODE_NORMALIZE di Tahap 1).\n//\n// PENTING (ditemukan lewat test-execute nyata, 27 Sep 2026): pakai .first(), BUKAN .item, untuk\n// node yang tidak ada jalur koneksi langsung ke sini (\"Aggregate Daily History\", \"Fetch Broker\n// Summary\") -- n8n perlu jalur koneksi nyata untuk menelusuri pairedItem saat memakai .item,\n// dan gagal dengan error \"No path back to referenced node\" kalau jalurnya tidak ada. .first()\n// tidak butuh itu, aman dipakai di sini karena tiap node tsb pasti menghasilkan TEPAT 1 item\n// per iterasi loop (batchSize=1).\n\nconst candidate = $('Loop Over Candidates').first().json;\nconst dailyHistory = ($('Aggregate Daily History').first().json.dailyHistory || [])\n  .sort((a, b) => String(a.date).localeCompare(String(b.date))); // pastikan lama -> baru (SCORING_LOGIC.md §2.1)\nconst brokerResp = $('Fetch Broker Summary').first().json;\nconst foreignResp = $json; // input langsung node ini = output \"Fetch Foreign Flow\"\n\nreturn [{\n  json: {\n    symbol: candidate.symbol,\n    companyName: candidate.companyName,\n    dailyHistory,\n    brokerSummaryByDate: brokerResp.data || [],\n    foreignFlowHistory: foreignResp.data || [],\n  },\n}];"
+      },
+      "id": "combine-enrichment",
+      "name": "Combine Candidate Enrichment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1088,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// News di-batch: SATU panggilan untuk SELURUH kandidat (parameter symbols dipisah koma),\n// bukan satu panggilan per kandidat -- lihat config/sectors-endpoints.js & docs/API_FINDINGS.md\n// §1.2. Node Code ini menggabungkan seluruh simbol jadi satu string SEBELUM node HTTP Request\n// di bawah, supaya node itu hanya menerima 1 item dan jalan tepat SEKALI.\n//\n// PENTING (ditemukan lewat test-execute nyata, 27 Sep 2026): dipasang setelah output \"done\"\n// Loop Over Candidates, memakai koneksi nyata (bukan referensi $()) -- cabang paralel yang\n// disambung lewat $() saja TIDAK terjamin urutan eksekusinya di n8n. \"items\" di sini = 20\n// kandidat hasil akumulasi loop, mengalir lewat koneksi asli dari output \"done\", BUKAN dari\n// $('Combine Candidate Enrichment').all() -- percobaan pertama pakai .all() ternyata HANYA\n// mengembalikan hasil run TERAKHIR dari node di dalam loop (bukan akumulasi semua iterasi),\n// beda dari ekspektasi. Output \"done\" milik SplitInBatches TERBUKTI benar mengakumulasi\n// seluruh iterasi -- itu sebabnya harus diambil lewat koneksi nyata, bukan $().\nconst symbols = items.map((item) => item.json.symbol).join(',');\nreturn [{ json: { symbols } }];"
+      },
+      "id": "collect-symbols-news",
+      "name": "Collect Symbols For News",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        512,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.sectors.app/v2/news/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "start",
+              "value": "={{ $now.setZone('utc').minus({ days: 7 }).toFormat('yyyy-LL-dd') }}"
+            },
+            {
+              "name": "end",
+              "value": "={{ $now.setZone('utc').toFormat('yyyy-LL-dd') }}"
+            },
+            {
+              "name": "limit",
+              "value": "30"
+            },
+            {
+              "name": "symbols",
+              "value": "={{ $json.symbols }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fetch-news-s2",
+      "name": "Fetch News Articles",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        832,
+        480
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "TRiYGsteCGY1VLbn",
+          "name": "Sectors API - Header Auth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "merge-news-candidates",
+      "name": "Merge News With Candidates",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        1088,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// SCORING_LOGIC.md §5 / kontrak CandidateRawData (src/scoring/index.js): newsArticles per\n// kandidat harus SUDAH difilter hanya artikel yang symbols-nya memuat kandidat itu.\n// docs/API_FINDINGS.md §1.4: field `symbols`pada artikel bisa kosong ([]) walau artikel\n// jelas membahas satu perusahaan -- filter di sini tetap paling aman dibanding tanpa filter sama\n// sekali, tapi kalau tim menemukan banyak berita relevan \"hilang\" karena symbols kosong, ini\n// tempat pertama yang perlu direvisi (misal fallback cari nama perusahaan di title/body).\n//\n// BUG NYATA (ditemukan lewat test-execute nyata, 27 Sep 2026): symbols di artikel /v2/news/\n// datang dengan sufiks \".JK\" (mis. \"BBCA.JK\"), sedangkan candidate.symbol SUDAH di-stripSuffix\n// sejak Normalize & Dedupe Candidates (mis. \"BBCA\"). Perbandingan exact-match tanpa strip\n// sufiks di sisi artikel membuat newsArticles SELALU 0 untuk SEMUA kandidat walau artikel\n// relevan ada -- bukan kasus \"symbols kosong\" dari docs/API_FINDINGS.md §1.4, melainkan bug\n// murni di filter ini. stripSuffix() diduplikasi di sini (bukan diimpor) karena alasan yang\n// sama seperti di CODE_NORMALIZE: Code node n8n tidak bisa import file lokal.\n//\n// Input node ini = hasil node Merge (mode combine/combineAll): tiap kandidat \"dikawinkan\"\n// dengan SATU respons News yang sama (Cartesian 20 kandidat x 1 respons News = 20 item, semua\n// field tergabung jadi satu object per item). Field results/pagination ikut nempel dari sisi\n// News -- dibuang di sini supaya output akhir bersih, cuma berisi field CandidateRawData.\nfunction stripSuffix(symbol) {\n  return String(symbol || '').split('.')[0].toUpperCase();\n}\n\nreturn items.map((item) => {\n  const { results, pagination, ...candidate } = item.json;\n  const articles = results || [];\n  const relatedNews = articles.filter(\n    (a) => Array.isArray(a.symbols) && a.symbols.map(stripSuffix).includes(candidate.symbol),\n  );\n  return { json: { ...candidate, newsArticles: relatedNews } };\n});"
+      },
+      "id": "attach-news",
+      "name": "Attach Related News",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1312,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Status Tahap 2 (27 Sep 2026 — TERUJI end-to-end)\n\n**Selesai & teruji lewat eksekusi nyata (webhook sementara, sudah dihapus):** enrichment 20 kandidat penuh (daily/broker-summary/foreign-flow lewat loop, news di-batch 1x untuk semua kandidat via node Merge combineAll), digabung jadi bentuk CandidateRawData persis kontrak scoreCandidate() di src/scoring/index.js.\n\n**Bug nyata yang ditemukan & diperbaiki selama testing:** (1) timezone salah pakai Asia/Jakarta bukan UTC untuk parameter tanggal API, (2) most-traded tidak menangani hari libur bursa (kandidat symbol kosong), (3) $('Node').all() TIDAK mengakumulasi seluruh iterasi loop -- harus lewat koneksi nyata (output \"done\" SplitInBatches), (4) filter newsArticles gagal karena field symbols artikel pakai sufiks .JK. Detail lengkap ada di komentar masing-masing Code node.\n\n**Belum dibangun:** scoring engine (salin logic src/scoring/ jadi Code node), anti-noise filter, output ranking (mode simple/detail), delivery Telegram, logging Google Sheets.",
+        "height": 260,
+        "width": 760
+      },
+      "id": "sticky-status-2",
+      "name": "Sticky Note 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        464,
+        672
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================================\n// TAHAP 3 — SCORING ENGINE (Code node, jalan \"Run Once for All Items\")\n// Inline PERSIS dari src/scoring/*.js (75 unit test lolos per 27 Sep 2026, termasuk Deteksi\n// Anomali §3b). Kalau file sumber berubah, sinkronkan manual ke sini -- Code node n8n tidak\n// bisa import file lokal.\n// Input: seluruh item dari \"Attach Related News\" (Tahap 2), bentuknya = CandidateRawData\n// persis kontrak scoreCandidate() di src/scoring/index.js.\n// ============================================================================\n\n// --- Config (SALINAN PERSIS config/scoring.config.json per 27 Sep 2026) ---\nconst CONFIG = {\n  normalisasi: {\n    volume: { lookbackDays: 20 },\n    brokerFlow: { lookbackDays: 10 },\n    foreignInflow: { lookbackDays: 20 },\n  },\n  volumeAnomaly: { smaWindowDays: 20, significantRatioThreshold: 1.5 },\n  brokerFlow: { significantConcentrationPct: 20, concentrationBasis: 'value_idr' },\n  anomalyDetection: { zScoreThreshold: 1.5 },\n  antiNoiseFilter: { minMarketCapBillionIdr: 5000 },\n  newsSentiment: {\n    timeDecayBuckets: [\n      { maxHours: 24, label: 'harian', weight: 1.0 },\n      { maxHours: 72, label: 'beberapa_hari_terakhir', weight: 0.5 },\n      { maxHours: 168, label: 'mingguan', weight: 0.2 },\n    ],\n    beyondBucketsWeight: 0,\n    multiArticleAggregation: 'average',\n  },\n  weightedScoring: { weights: { volume: 30, brokerFlow: 35, news: 15, foreignFlow: 20 } },\n  tieBreaker: { rule: 'higher_broker_concentration' },\n  output: { topN: 7 },\n};\n\n// --- src/scoring/normalize.js — SCORING_LOGIC.md §1 ---\nfunction minMaxNormalize(value, historyValues) {\n  if (!Array.isArray(historyValues) || historyValues.length === 0) {\n    throw new Error('minMaxNormalize: historyValues tidak boleh kosong');\n  }\n  const min = Math.min(...historyValues);\n  const max = Math.max(...historyValues);\n  if (max === min) return 50;\n  const score = ((value - min) / (max - min)) * 100;\n  return Math.max(0, Math.min(100, score));\n}\n\n// --- src/scoring/volumeAnomaly.js — SCORING_LOGIC.md §2.1 & §3b ---\nfunction smaVolume(priorVolumes, n) {\n  if (!Number.isInteger(n) || n <= 0) throw new Error('smaVolume: n harus bilangan bulat positif');\n  if (priorVolumes.length < n) {\n    throw new Error('smaVolume: histori tidak cukup — butuh ' + n + ' hari, hanya tersedia ' + priorVolumes.length + '.');\n  }\n  const window = priorVolumes.slice(-n);\n  return window.reduce((a, b) => a + b, 0) / n;\n}\nfunction volumeRatio(todayVolume, sma) {\n  if (sma === 0) return todayVolume === 0 ? 0 : Infinity;\n  return todayVolume / sma;\n}\nfunction isVolumeSignificant(ratio, thresholdY) {\n  return ratio > thresholdY;\n}\n\n// --- src/scoring/priceChange.js — SCORING_LOGIC.md §2.2 ---\nfunction priceChangeFromOpen(close, open) {\n  if (open === 0) throw new Error('priceChangeFromOpen: harga open tidak boleh 0');\n  return ((close - open) / open) * 100;\n}\n\n// --- src/scoring/brokerFlow.js — SCORING_LOGIC.md §3 ---\nconst BASIS_FIELDS = {\n  value_idr: { buy: 'bval', sell: 'sval', net: 'nval' },\n  lot: { buy: 'blot', sell: 'slot', net: 'nlot' },\n};\nfunction brokerConcentration(brokerRows, basis) {\n  const fields = BASIS_FIELDS[basis];\n  if (!fields) throw new Error('brokerConcentration: basis tidak dikenal \"' + basis + '\"');\n  if (!Array.isArray(brokerRows) || brokerRows.length === 0) {\n    return { totalBuy: 0, totalSell: 0, topAccumulator: null, topDistributor: null };\n  }\n  const totalBuy = brokerRows.reduce((a, r) => a + (r[fields.buy] || 0), 0);\n  const totalSell = brokerRows.reduce((a, r) => a + (r[fields.sell] || 0), 0);\n  const totalActivity = totalBuy + totalSell;\n  if (totalActivity === 0) return { totalBuy: 0, totalSell: 0, topAccumulator: null, topDistributor: null };\n  let topAccumulator = null;\n  let topDistributor = null;\n  for (const row of brokerRows) {\n    const net = row[fields.net] || 0;\n    const share = (net / totalActivity) * 100;\n    if (net > 0 && (!topAccumulator || net > topAccumulator._net)) {\n      topAccumulator = { broker_code: row.broker_code, netShare: share, _net: net };\n    }\n    if (net < 0 && (!topDistributor || net < topDistributor._net)) {\n      topDistributor = { broker_code: row.broker_code, netShare: share, _net: net };\n    }\n  }\n  if (topAccumulator) delete topAccumulator._net;\n  if (topDistributor) delete topDistributor._net;\n  return { totalBuy, totalSell, topAccumulator, topDistributor };\n}\n\n// --- src/scoring/anomalyDetection.js — SCORING_LOGIC.md §3b (27 Sep 2026) ---\nfunction computeZScore(value, historyValues) {\n  if (!Array.isArray(historyValues) || historyValues.length === 0) {\n    throw new Error('computeZScore: historyValues tidak boleh kosong');\n  }\n  const mean = historyValues.reduce((a, b) => a + b, 0) / historyValues.length;\n  const variance = historyValues.reduce((a, b) => a + (b - mean) ** 2, 0) / historyValues.length;\n  const stdDev = Math.sqrt(variance);\n  if (stdDev === 0) {\n    return { zScore: value === mean ? 0 : value > mean ? Infinity : -Infinity, mean, stdDev };\n  }\n  return { zScore: (value - mean) / stdDev, mean, stdDev };\n}\nfunction isAnomaly(zScore, thresholdZ) {\n  if (zScore === Infinity || zScore === -Infinity) return true;\n  return Math.abs(zScore) >= thresholdZ;\n}\n\n// --- src/scoring/newsSentiment.js — SCORING_LOGIC.md §5 ---\nfunction deriveBaseSentimentFromTags(tags) {\n  if (!Array.isArray(tags) || tags.length === 0) return 0;\n  const hasBullish = tags.includes('Bullish');\n  const hasBearish = tags.includes('Bearish');\n  if (hasBullish && !hasBearish) return 1;\n  if (hasBearish && !hasBullish) return -1;\n  return 0;\n}\nfunction timeDecayWeight(hoursAgo, buckets, beyondBucketsWeight) {\n  if (hoursAgo < 0) throw new Error('timeDecayWeight: hoursAgo tidak boleh negatif');\n  const bucket = buckets.find((b) => hoursAgo <= b.maxHours);\n  return bucket ? bucket.weight : beyondBucketsWeight;\n}\nfunction toUtcDate(value) {\n  if (value instanceof Date) return value;\n  return new Date(String(value).endsWith('Z') ? value : value + 'Z');\n}\nfunction hoursSincePublished(publishedAtIso, now) {\n  const published = toUtcDate(publishedAtIso);\n  const ref = toUtcDate(now || new Date());\n  return (ref.getTime() - published.getTime()) / (1000 * 60 * 60);\n}\nfunction scoreOneArticle(baseSentimentScore, hoursAgo, buckets, beyondBucketsWeight) {\n  return baseSentimentScore * timeDecayWeight(hoursAgo, buckets, beyondBucketsWeight);\n}\nfunction aggregateNewsScore(articleScores, aggregation) {\n  if (!articleScores.length) return 0;\n  if (aggregation === 'average') return articleScores.reduce((a, b) => a + b, 0) / articleScores.length;\n  if (aggregation === 'max') {\n    return articleScores.reduce((a, b) => (Math.abs(b) > Math.abs(a) ? b : a));\n  }\n  throw new Error('aggregateNewsScore: aggregation tidak dikenal \"' + aggregation + '\"');\n}\nfunction normalizeNewsScore(rawNewsScore) {\n  const score = ((rawNewsScore + 1) / 2) * 100;\n  return Math.max(0, Math.min(100, score));\n}\n\n// --- src/scoring/antiNoiseFilter.js — SCORING_LOGIC.md §3 ---\nfunction passesMarketCapFilter(marketCapIdr, minMarketCapBillionIdr) {\n  const minIdr = minMarketCapBillionIdr * 1_000_000_000;\n  return marketCapIdr >= minIdr;\n}\n\n// --- src/scoring/weightedScore.js — SCORING_LOGIC.md §4 ---\nfunction weightedFinalScore(scores, weights) {\n  const total = weights.volume + weights.brokerFlow + weights.news + weights.foreignFlow;\n  if (Math.abs(total - 100) > 0.001) {\n    throw new Error('weightedFinalScore: total bobot harus 100, saat ini ' + total);\n  }\n  return (\n    (weights.volume * scores.volume +\n      weights.brokerFlow * scores.brokerFlow +\n      weights.news * scores.news +\n      weights.foreignFlow * scores.foreignFlow) / 100\n  );\n}\n\n// --- src/scoring/tieBreaker.js — SCORING_LOGIC.md §6 ---\nconst TIE_BREAKER_RULES = {\n  higher_volume_ratio: (a, b) => (b.volumeRatio ?? 0) - (a.volumeRatio ?? 0),\n  higher_broker_concentration: (a, b) => (b.brokerConcentrationShare ?? 0) - (a.brokerConcentrationShare ?? 0),\n  more_recent_news: (a, b) => (a.latestNewsHoursAgo ?? Infinity) - (b.latestNewsHoursAgo ?? Infinity),\n  alphabetical_symbol: (a, b) => String(a.symbol).localeCompare(String(b.symbol)),\n};\nfunction sortRanking(candidates, rule) {\n  const tieBreak = TIE_BREAKER_RULES[rule];\n  if (!tieBreak) throw new Error('sortRanking: tie-breaker rule tidak dikenal \"' + rule + '\"');\n  return [...candidates].sort((a, b) => {\n    const scoreDiff = b.finalScore - a.finalScore;\n    if (scoreDiff !== 0) return scoreDiff;\n    return tieBreak(a, b);\n  });\n}\n\n// --- src/scoring/reasoningText.js — SCORING_LOGIC.md §7 & §3b ---\nconst FACTOR_LABELS = {\n  volume: 'lonjakan volume transaksi',\n  brokerFlow: 'aktivitas akumulasi broker',\n  news: 'sentimen berita terkini',\n  foreignFlow: 'aliran dana asing masuk',\n};\nconst ANOMALY_LABELS = {\n  volume: 'volume transaksi jauh di atas kebiasaan',\n  brokerFlow: 'aktivitas broker jauh di luar pola biasa saham ini',\n  foreignFlow: 'aliran dana asing jauh di luar pola biasa saham ini',\n};\nfunction describeAnomalies(anomalies) {\n  if (!anomalies) return '';\n  const active = Object.entries(anomalies).filter(([, d]) => d).map(([f]) => ANOMALY_LABELS[f]);\n  if (!active.length) return '';\n  return ' 🚨 Anomali terdeteksi: ' + active.join(', ') + '.';\n}\nfunction dominantFactor(scores, weights) {\n  const contributions = {\n    volume: weights.volume * scores.volume,\n    brokerFlow: weights.brokerFlow * scores.brokerFlow,\n    news: weights.news * scores.news,\n    foreignFlow: weights.foreignFlow * scores.foreignFlow,\n  };\n  return Object.entries(contributions).reduce((best, [k, v]) => (v > contributions[best] ? k : best), 'volume');\n}\nfunction buildSimpleReasoning({ companyName, priceChangePct, scores, weights, anomalies }) {\n  const arah = priceChangePct >= 0 ? 'naik' : 'turun';\n  const pct = Math.abs(priceChangePct).toFixed(2);\n  const factor = dominantFactor(scores, weights);\n  return companyName + ' ' + arah + ' ' + pct + '% didukung oleh ' + FACTOR_LABELS[factor] + '.' + describeAnomalies(anomalies);\n}\nfunction buildDetailReasoning({ symbol, companyName, finalScore, scores, todayVolume, volumeRatio, brokerConcentration, relatedNews, netForeignInflowIdr, anomalies = {}, anomalyDetails = {} }) {\n  const lines = [\n    companyName + ' (' + symbol + ') — Skor Akhir: ' + finalScore.toFixed(2),\n    '- Volume: skor ' + scores.volume.toFixed(1) + ' | volume hari ini ' + todayVolume.toLocaleString('id-ID') + ' | rasio thd SMA ' + volumeRatio.toFixed(2) + 'x' + (anomalies.volume ? ' 🚨 ANOMALI' : ''),\n    '- Broker flow: skor ' + scores.brokerFlow.toFixed(1) + ' | ' +\n      (brokerConcentration.topAccumulator\n        ? 'akumulasi terbesar oleh ' + brokerConcentration.topAccumulator.broker_code + ' (' + brokerConcentration.topAccumulator.netShare.toFixed(1) + '%)'\n        : 'tidak ada akumulasi dominan') +\n      (brokerConcentration.topDistributor\n        ? ', distribusi terbesar oleh ' + brokerConcentration.topDistributor.broker_code + ' (' + Math.abs(brokerConcentration.topDistributor.netShare).toFixed(1) + '%)'\n        : '') +\n      (anomalies.brokerFlow ? ' 🚨 ANOMALI (Z=' + anomalyDetails.brokerFlowZScore?.toFixed(2) + ')' : ''),\n    '- Berita: skor ' + scores.news.toFixed(2) + ' | ' +\n      (relatedNews.length ? relatedNews.map((n) => '\"' + n.title + '\" (' + n.source + ')').join('; ') : 'tidak ada berita relevan dalam window waktu'),\n    '- Foreign flow: skor ' + scores.foreignFlow.toFixed(1) + ' | net foreign inflow hari ini Rp' + netForeignInflowIdr.toLocaleString('id-ID') +\n      (anomalies.foreignFlow ? ' 🚨 ANOMALI (Z=' + anomalyDetails.foreignFlowZScore?.toFixed(2) + ')' : ''),\n  ];\n  return lines.join('\\n');\n}\nfunction disclaimerText() {\n  return 'Disclaimer: Informasi ini adalah alat bantu analisis data pasar, BUKAN rekomendasi ' +\n    'investasi atau nasihat keuangan. Keputusan investasi sepenuhnya tanggung jawab Anda ' +\n    'sendiri. Data bersumber dari Sectors Financial API dan dapat mengandung keterlambatan ' +\n    'atau ketidakakuratan.';\n}\n\n// --- src/scoring/index.js — orkestrator (scoreCandidate + buildDailyWatchlist) ---\nfunction scoreCandidate(raw, config) {\n  const today = raw.dailyHistory[raw.dailyHistory.length - 1];\n  const priorDays = raw.dailyHistory.slice(0, -1);\n\n  const priorVolumes = priorDays.map((d) => d.volume);\n  const sma = smaVolume(priorVolumes, config.volumeAnomaly.smaWindowDays);\n  const vRatio = volumeRatio(today.volume, sma);\n  const volumeScore = minMaxNormalize(\n    today.volume,\n    priorDays.slice(-config.normalisasi.volume.lookbackDays).map((d) => d.volume).concat(today.volume),\n  );\n\n  const priceChangePct = priceChangeFromOpen(today.close, today.open);\n\n  const todayBrokerRows = (raw.brokerSummaryByDate.find((d) => d.date === today.date) || {}).summary || [];\n  const brokerConc = brokerConcentration(todayBrokerRows, config.brokerFlow.concentrationBasis);\n  const netField = config.brokerFlow.concentrationBasis === 'lot' ? 'nlot' : 'nval';\n  const brokerHistoryNet = raw.brokerSummaryByDate\n    .slice(-config.normalisasi.brokerFlow.lookbackDays)\n    .map((d) => (d.summary || []).reduce((a, r) => a + (r[netField] || 0), 0));\n  const todayNetTotal = todayBrokerRows.reduce((a, r) => a + (r[netField] || 0), 0);\n  const brokerFlowScore = minMaxNormalize(todayNetTotal, brokerHistoryNet.length ? brokerHistoryNet : [todayNetTotal]);\n\n  const now = raw.now || new Date();\n  const relevantArticles = raw.newsArticles.filter((a) => {\n    const hrs = hoursSincePublished(a.timestamp, now);\n    return hrs >= 0 && hrs <= 24 * 7;\n  });\n  const articleScores = relevantArticles.map((a) =>\n    scoreOneArticle(\n      deriveBaseSentimentFromTags(a.tags),\n      hoursSincePublished(a.timestamp, now),\n      config.newsSentiment.timeDecayBuckets,\n      config.newsSentiment.beyondBucketsWeight,\n    ),\n  );\n  const newsScore = normalizeNewsScore(aggregateNewsScore(articleScores, config.newsSentiment.multiArticleAggregation));\n\n  const todayForeign = (raw.foreignFlowHistory[raw.foreignFlowHistory.length - 1] || {}).net_foreign_inflow ?? 0;\n  const foreignHistory = raw.foreignFlowHistory\n    .slice(-config.normalisasi.foreignInflow.lookbackDays)\n    .map((d) => d.net_foreign_inflow);\n  const foreignFlowScore = minMaxNormalize(todayForeign, foreignHistory.length ? foreignHistory : [todayForeign]);\n\n  // --- Deteksi Anomali (SCORING_LOGIC.md §3b, 27 Sep 2026) ---\n  const volumeAnomalyDetected = isVolumeSignificant(vRatio, config.volumeAnomaly.significantRatioThreshold);\n\n  const brokerHistoryPrior = raw.brokerSummaryByDate\n    .filter((d) => d.date !== today.date)\n    .slice(-config.normalisasi.brokerFlow.lookbackDays)\n    .map((d) => (d.summary || []).reduce((a, r) => a + (r[netField] || 0), 0));\n  const brokerFlowZ = brokerHistoryPrior.length ? computeZScore(todayNetTotal, brokerHistoryPrior) : { zScore: 0, mean: todayNetTotal, stdDev: 0 };\n  const brokerFlowAnomalyDetected = brokerHistoryPrior.length > 0 && isAnomaly(brokerFlowZ.zScore, config.anomalyDetection.zScoreThreshold);\n\n  const foreignHistoryPrior = raw.foreignFlowHistory\n    .filter((d) => d.date !== today.date)\n    .slice(-config.normalisasi.foreignInflow.lookbackDays)\n    .map((d) => d.net_foreign_inflow);\n  const foreignFlowZ = foreignHistoryPrior.length ? computeZScore(todayForeign, foreignHistoryPrior) : { zScore: 0, mean: todayForeign, stdDev: 0 };\n  const foreignFlowAnomalyDetected = foreignHistoryPrior.length > 0 && isAnomaly(foreignFlowZ.zScore, config.anomalyDetection.zScoreThreshold);\n\n  const anomalies = { volume: volumeAnomalyDetected, brokerFlow: brokerFlowAnomalyDetected, foreignFlow: foreignFlowAnomalyDetected };\n  const anomalyDetails = { brokerFlowZScore: brokerFlowZ.zScore, foreignFlowZScore: foreignFlowZ.zScore };\n\n  const scores = { volume: volumeScore, brokerFlow: brokerFlowScore, news: newsScore, foreignFlow: foreignFlowScore };\n  const finalScore = weightedFinalScore(scores, config.weightedScoring.weights);\n\n  const passesFilter = passesMarketCapFilter(today.market_cap, config.antiNoiseFilter.minMarketCapBillionIdr);\n\n  const simpleReasoning = buildSimpleReasoning({\n    companyName: raw.companyName, priceChangePct, scores, weights: config.weightedScoring.weights, anomalies,\n  });\n  const detailReasoning = buildDetailReasoning({\n    symbol: raw.symbol, companyName: raw.companyName, finalScore, scores,\n    todayVolume: today.volume, volumeRatio: vRatio, brokerConcentration: brokerConc,\n    relatedNews: relevantArticles, netForeignInflowIdr: todayForeign, anomalies, anomalyDetails,\n  });\n\n  return {\n    symbol: raw.symbol, companyName: raw.companyName, passesFilter, finalScore, scores,\n    priceChangePct, volumeRatio: vRatio, brokerConcentration: brokerConc,\n    relatedNews: relevantArticles, netForeignInflowIdr: todayForeign, todayVolume: today.volume,\n    anomalies, anomalyDetails, simpleReasoning, detailReasoning,\n  };\n}\n\nfunction buildDailyWatchlist(rawCandidates, config) {\n  const skipped = [];\n  const scored = [];\n  for (const raw of rawCandidates) {\n    try {\n      const result = scoreCandidate(raw, config);\n      if (result.passesFilter) scored.push(result);\n    } catch (e) {\n      skipped.push({ symbol: raw.symbol, reason: e.message });\n    }\n  }\n  const ranked = sortRanking(\n    scored.map((c) => ({\n      ...c,\n      volumeRatio: c.volumeRatio,\n      brokerConcentrationShare: c.brokerConcentration.topAccumulator ? c.brokerConcentration.topAccumulator.netShare : 0,\n      latestNewsHoursAgo: c.relatedNews.length\n        ? Math.min(...c.relatedNews.map((a) => hoursSincePublished(a.timestamp, config.now || new Date())))\n        : Infinity,\n    })),\n    config.tieBreaker.rule,\n  );\n  return {\n    generatedAt: new Date().toISOString(),\n    disclaimer: disclaimerText(),\n    watchlist: ranked.slice(0, config.output.topN),\n    skipped,\n  };\n}\n\n// ============================================================================\n// Driver — dipanggil sekali untuk seluruh kandidat (mode \"Run Once for All Items\")\n// ============================================================================\nconst rawCandidates = items.map((item) => item.json);\nconst result = buildDailyWatchlist(rawCandidates, CONFIG);\n\nreturn [{ json: result }];"
+      },
+      "id": "score-candidates",
+      "name": "Score Candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Status Tahap 3\n\n**Selesai:** scoring engine (inline dari src/scoring/*.js) — hasil akhir 1 item berisi { generatedAt, disclaimer, watchlist[] }, tiap watchlist item punya simpleReasoning & detailReasoning siap kirim.\n\n**Belum dibangun:** delivery Telegram, logging Google Sheets.\n\nPENTING: kalau config/scoring.config.json berubah, jalankan ulang scripts/deploy-stage3-workflow.js supaya CONFIG di Code node ikut tersinkronkan.",
+        "height": 220,
+        "width": 480
+      },
+      "id": "sticky-status-3",
+      "name": "Sticky Note 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1520,
+        672
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.text }}",
+        "additionalFields": {}
+      },
+      "id": "send-telegram",
+      "name": "Send Telegram Message",
+      "webhookId": "875a2c37-91b0-4c1c-8d10-294aa283e657",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2080,
+        272
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "Gc1pPZaYMawyHmc2",
+          "name": "Telegram Bot - Sectors Watchlist"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// CLAUDE.md §3: Google Sheets sebagai rekap harian dan audit trail. Satu baris per saham di\n// watchlist. Ditambah kolom anomali (SCORING_LOGIC.md §3b, 27 Sep 2026) supaya badge 🚨 yang\n// muncul di Telegram bisa ditelusuri angka Z-score-nya di sini.\nconst result = $json;\nif (result.watchlist.length === 0) return [];\n\nreturn result.watchlist.map((c, i) => ({\n  json: {\n    tanggal: result.generatedAt,\n    rank: i + 1,\n    symbol: c.symbol,\n    nama_perusahaan: c.companyName,\n    skor_akhir: Number(c.finalScore.toFixed(2)),\n    skor_volume: Number(c.scores.volume.toFixed(1)),\n    skor_broker_flow: Number(c.scores.brokerFlow.toFixed(1)),\n    skor_news: Number(c.scores.news.toFixed(1)),\n    skor_foreign_flow: Number(c.scores.foreignFlow.toFixed(1)),\n    persen_perubahan_harga: Number(c.priceChangePct.toFixed(2)),\n    volume_hari_ini: c.todayVolume,\n    volume_ratio_thd_sma: Number(c.volumeRatio.toFixed(2)),\n    broker_akumulasi_terbesar: c.brokerConcentration.topAccumulator\n      ? c.brokerConcentration.topAccumulator.broker_code + ' (' + c.brokerConcentration.topAccumulator.netShare.toFixed(1) + '%)'\n      : '-',\n    net_foreign_inflow_idr: c.netForeignInflowIdr,\n    jumlah_berita_relevan: c.relatedNews.length,\n    anomali_volume: c.anomalies?.volume ?? false,\n    anomali_broker_flow: c.anomalies?.brokerFlow ?? false,\n    anomali_broker_flow_zscore: Number.isFinite(c.anomalyDetails?.brokerFlowZScore) ? Number(c.anomalyDetails.brokerFlowZScore.toFixed(2)) : c.anomalyDetails?.brokerFlowZScore ?? null,\n    anomali_foreign_flow: c.anomalies?.foreignFlow ?? false,\n    anomali_foreign_flow_zscore: Number.isFinite(c.anomalyDetails?.foreignFlowZScore) ? Number(c.anomalyDetails.foreignFlowZScore.toFixed(2)) : c.anomalyDetails?.foreignFlowZScore ?? null,\n    alasan_singkat: c.simpleReasoning,\n  },\n}));"
+      },
+      "id": "prepare-sheet-rows",
+      "name": "Prepare Sheet Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1824,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1kjNB6fLkxeP0uvRxJ5SxqiKKXZ75QIUpdtcwSSx-X5o"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Sheet1"
+        },
+        "dataMode": "autoMapInputData",
+        "options": {}
+      },
+      "id": "log-to-sheets",
+      "name": "Log Watchlist to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        2080,
+        624
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "3hTHgpu4eqmw5DlU",
+          "name": "Google Service Account - Sectors Watchlist"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "## Status Tahap 4\n\n**Selesai:** delivery Telegram (mode simple + link Sheet + disclaimer) dan logging Google Sheets (1 baris per saham watchlist), berjalan paralel & independen.\n\nchatId Telegram ditulis literal di parameter node (lihat deploy-stage4-workflow.js) -- kalau chat tujuan berubah, edit TELEGRAM_CHAT_ID di script itu lalu redeploy.\n\nPIPELINE LENGKAP: Tahap 1-4 semua sudah tersambung dari Schedule Trigger.",
+        "height": 200,
+        "width": 520
+      },
+      "id": "sticky-status-4",
+      "name": "Sticky Note 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1792,
+        800
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1kjNB6fLkxeP0uvRxJ5SxqiKKXZ75QIUpdtcwSSx-X5o"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Sheet1"
+        },
+        "options": {}
+      },
+      "id": "read-watchlist-history",
+      "name": "Read Watchlist History",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 3,
+      "position": [
+        1376,
+        704
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "3hTHgpu4eqmw5DlU",
+          "name": "Google Service Account - Sectors Watchlist"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// \"Daily Market Brief\" (27 Sep 2026, keputusan tim): bandingkan watchlist hari ini dengan hari\n// BURSA sebelumnya (bukan strict kalender kemarin -- otomatis lompat akhir pekan/libur karena\n// yang dipakai adalah tanggal run TERAKHIR yang benar-benar tercatat di Sheet, apapun itu).\n// Murni agregasi statistik dari data yang SUDAH tersimpan, TIDAK ada LLM/AI sama sekali --\n// keputusan eksplisit tim untuk tetap sejalan CLAUDE.md §3 (push otomatis satu arah, bukan\n// chatbot interaktif).\nconst today = $('Score Candidates').first().json;\nconst todayDateStr = today.generatedAt.slice(0, 10); // YYYY-MM-DD\n\n// Input langsung node ini = \"Read Watchlist History\" (seluruh baris yang pernah di-log).\n// Kelompokkan per tanggal, buang baris hari ini sendiri (jaga-jaga kalau kebetulan sudah\n// ke-log lebih dulu oleh eksekusi lain).\nconst byDate = {};\nfor (const item of items) {\n  const row = item.json;\n  const dateStr = String(row.tanggal || '').slice(0, 10);\n  if (!dateStr || dateStr === todayDateStr) continue;\n  if (!byDate[dateStr]) byDate[dateStr] = [];\n  byDate[dateStr].push(row);\n}\n\nconst previousDates = Object.keys(byDate).sort();\nconst lastDate = previousDates[previousDates.length - 1];\nconst previousRows = lastDate ? byDate[lastDate] : [];\n\nlet comparisonText;\nlet comparisonData = { hasPrevious: false };\n\nif (!lastDate) {\n  comparisonText = 'Belum ada data hari bursa sebelumnya untuk dibandingkan (kemungkinan ini run pertama).';\n} else {\n  const prevBySymbol = Object.fromEntries(previousRows.map((r) => [r.symbol, r]));\n  const todaySymbols = new Set(today.watchlist.map((c) => c.symbol));\n\n  const naik = [];\n  const turun = [];\n  const baru = [];\n  const keluar = [];\n\n  for (const c of today.watchlist) {\n    const prev = prevBySymbol[c.symbol];\n    if (!prev) {\n      baru.push(c.symbol);\n    } else {\n      const delta = c.finalScore - prev.skor_akhir;\n      if (delta > 0.5) naik.push(c.symbol + ' (+' + delta.toFixed(1) + ')');\n      else if (delta < -0.5) turun.push(c.symbol + ' (' + delta.toFixed(1) + ')');\n    }\n  }\n  for (const r of previousRows) {\n    if (!todaySymbols.has(r.symbol)) keluar.push(r.symbol);\n  }\n\n  const avgToday = today.watchlist.length ? today.watchlist.reduce((a, c) => a + c.finalScore, 0) / today.watchlist.length : 0;\n  const avgPrev = previousRows.length ? previousRows.reduce((a, r) => a + r.skor_akhir, 0) / previousRows.length : 0;\n  const avgDelta = avgToday - avgPrev;\n  const arahUmum = avgDelta > 1 ? 'menguat' : avgDelta < -1 ? 'melemah' : 'relatif stabil';\n\n  const lines = [];\n  lines.push('Dibanding hari bursa sebelumnya (' + lastDate + '), rata-rata skor watchlist ' + arahUmum + ' (' + avgPrev.toFixed(1) + ' -> ' + avgToday.toFixed(1) + ').');\n  if (baru.length) lines.push('Baru masuk watchlist: ' + baru.join(', ') + '.');\n  if (keluar.length) lines.push('Keluar dari watchlist: ' + keluar.join(', ') + '.');\n  if (naik.length) lines.push('Skor naik: ' + naik.join(', ') + '.');\n  if (turun.length) lines.push('Skor turun: ' + turun.join(', ') + '.');\n  comparisonText = lines.join(' ');\n  comparisonData = { hasPrevious: true, lastDate, avgToday, avgPrev, avgDelta, baru, keluar, naik, turun };\n}\n\nreturn [{ json: { ...today, comparisonText, comparisonData } }];"
+      },
+      "id": "compare-yesterday",
+      "name": "Compare With Yesterday",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// SCORING_LOGIC.md §7 / CLAUDE.md §7: pesan Telegram harian mode simple + \"Daily Market Brief\"\n// (perbandingan vs hari bursa sebelumnya, 27 Sep 2026) + link ke Google Sheet untuk mode detail\n// + disclaimer wajib di SETIAP keluaran. Teks polos (tanpa parse_mode) SENGAJA dipilih --\n// MarkdownV2 Telegram butuh escaping karakter khusus yang gampang salah dan bikin pesan gagal\n// terkirim; teks polos lebih andal untuk workflow otonom.\nconst result = $json;\nconst tanggal = new Date(result.generatedAt).toLocaleDateString('id-ID', {\n  weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Asia/Jakarta',\n});\n\nconst lines = [];\nlines.push('📊 Sectors Daily Watchlist — ' + tanggal);\nlines.push('');\nlines.push('📈 Ringkasan: ' + result.comparisonText);\nlines.push('');\n\nif (result.watchlist.length === 0) {\n  lines.push('Tidak ada saham yang lolos kriteria watchlist hari ini.');\n} else {\n  result.watchlist.forEach((c, i) => {\n    lines.push((i + 1) + '. ' + c.symbol + ' (' + c.companyName + ') — Skor ' + c.finalScore.toFixed(1));\n    lines.push('   ' + c.simpleReasoning);\n  });\n}\n\nlines.push('');\nlines.push('📄 Detail lengkap (skor tiap faktor, broker flow, berita): https://docs.google.com/spreadsheets/d/1kjNB6fLkxeP0uvRxJ5SxqiKKXZ75QIUpdtcwSSx-X5o/edit');\nlines.push('');\nlines.push(result.disclaimer);\n\nreturn [{ json: { text: lines.join('\\n') } }];"
+      },
+      "id": "format-telegram",
+      "name": "Format Telegram Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1824,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Status Tahap 5 — Daily Market Brief\n\n**Selesai:** perbandingan watchlist hari ini vs hari bursa sebelumnya (skor naik/turun, saham baru/keluar), murni statistik dari Google Sheets. TIDAK pakai LLM/chatbot -- keputusan tim 27 Sep 2026, tetap sejalan CLAUDE.md §3 (push satu arah).",
+        "height": 180,
+        "width": 520
+      },
+      "id": "sticky-status-5",
+      "name": "Sticky Note 5",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1520,
+        800
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        -200
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Top Company Movers",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Most Traded Stocks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Most Traded Stocks": {
+      "main": [
+        [
+          {
+            "node": "Normalize & Dedupe Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Candidates": {
+      "main": [
+        [
+          {
+            "node": "Collect Symbols For News",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge News With Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch Daily Transaction Data",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Broker Summary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Foreign Flow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Daily Transaction Data": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Daily History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Foreign Flow": {
+      "main": [
+        [
+          {
+            "node": "Combine Candidate Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Candidate Enrichment": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Symbols For News": {
+      "main": [
+        [
+          {
+            "node": "Fetch News Articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize & Dedupe Candidates": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch News Articles": {
+      "main": [
+        [
+          {
+            "node": "Merge News With Candidates",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge News With Candidates": {
+      "main": [
+        [
+          {
+            "node": "Attach Related News",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Related News": {
+      "main": [
+        [
+          {
+            "node": "Score Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Candidates": {
+      "main": [
+        [
+          {
+            "node": "Read Watchlist History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Telegram Message": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Sheet Rows": {
+      "main": [
+        [
+          {
+            "node": "Log Watchlist to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Watchlist History": {
+      "main": [
+        [
+          {
+            "node": "Compare With Yesterday",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare With Yesterday": {
+      "main": [
+        [
+          {
+            "node": "Format Telegram Message",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Sheet Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Top Company Movers",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Most Traded Stocks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timezone": "Asia/Jakarta"
+  },
+  "versionId": "1874aa4a-5cc5-44c8-a0a8-2648c205279d",
+  "meta": {
+    "instanceId": "461428c2e6cfbf3a6692b76491e9b2517fd40258f366c1277bc1067ff367a849"
+  },
+  "nodeGroups": [],
+  "id": "pbtINMh5vkrSR8NP",
+  "tags": []
+}

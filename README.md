@@ -15,8 +15,23 @@ Seluruh 4 tahap alur (fetch kandidat → enrichment → scoring → delivery) su
 workflow n8n dan **terbukti berjalan nyata** lewat beberapa kali eksekusi uji langsung terhadap
 Sectors API asli — bukan simulasi. Rincian tahap ada di bagian "Cara Kerja" di bawah.
 
-Yang masih tersisa sebelum submission: aktivasi jadwal otomatis (Schedule Trigger) dan
-mengumpulkan bukti log run otonom selama beberapa hari (CLAUDE.md §6).
+Selain 4 tahap inti, pipeline sudah memuat **Daily Market Brief** (perbandingan watchlist hari ini
+dengan hari bursa sebelumnya, murni statistik tanpa LLM) dan **deteksi anomali** Z-score untuk
+broker flow dan foreign flow (badge 🚨 di pesan Telegram dan kolom audit di Google Sheets).
+
+### Bukti eksekusi
+
+Riwayat eksekusi workflow di n8n (dibaca langsung dari REST API n8n pada 8 Okt 2026):
+
+| Waktu (UTC) | Mode | Hasil | Keterangan |
+|---|---|---|---|
+| 2026-10-03 18:21 | CLI (`n8n execute`) | success | 10 kandidat, 7 saham di watchlist, 2 kandidat di-skip, pesan Telegram terkirim, 7 baris tercatat di Sheet |
+| 2026-10-04 03:46 | manual | success | uji ulang end-to-end |
+
+Run di atas dipicu manual (Manual Trigger atau CLI), **bukan** oleh Schedule Trigger. Jadwal
+otomatis (Senin-Jumat 07:30 WIB) sudah terkonfigurasi di workflow, tetapi belum pernah diaktifkan
+sehingga belum ada log run terjadwal. Hasil tiap run juga tersimpan sebagai baris di Google Sheet
+(kolom `tanggal`).
 
 ## Cara kerja
 
@@ -46,13 +61,17 @@ Rumus, threshold, dan bobot scoring yang dipakai (beserta alasan tiap angka) ada
 | `SCORING_LOGIC.md` | Rumus, threshold, dan bobot scoring — sudah terisi lengkap, riwayat tiap angka dicatat |
 | `config/sectors-endpoints.js` | Katalog endpoint Sectors API v2 beserta parameter dan biaya credit |
 | `config/scoring.config.json` | Angka scoring final (sinkron dengan `SCORING_LOGIC.md`) |
-| `src/scoring/` | Scoring engine JS murni, 63 unit test (`npm test`) |
+| `src/scoring/` | Scoring engine JS murni, 75 unit test (`npm test`) |
+| `workflows/` | Ekspor JSON workflow n8n pipeline penuh (siap diimpor, lihat bagian di bawah) |
 | `scripts/verify-api.js` | Verifikasi manual seluruh endpoint Sectors API (CLAUDE.md §8) |
 | `scripts/n8n-client.js` | Klien tipis REST API n8n, dipakai skrip deploy di bawah |
 | `scripts/deploy-stage1-workflow.js` | Deploy node Tahap 1 (fetch kandidat) ke n8n |
 | `scripts/deploy-stage2-workflow.js` | Tambah node Tahap 2 (enrichment) — loop per kandidat + batch News |
 | `scripts/deploy-stage3-workflow.js` | Tambah node Tahap 3 (scoring engine, inline dari `src/scoring/`) |
 | `scripts/deploy-stage4-workflow.js` | Tambah node Tahap 4 (delivery Telegram + logging Sheets) |
+| `scripts/deploy-stage5-workflow.js` | Tambah Daily Market Brief (perbandingan vs hari bursa sebelumnya) |
+| `scripts/deploy-stage6-workflow.js` | Sinkronkan deteksi anomali (Z-score) ke node scoring dan logging |
+| `scripts/format-sheet.js` | Setup sekali: warna header per kategori dan tab `Keterangan` di Google Sheet |
 | `docs/API_FINDINGS.md` | Temuan API yang mempengaruhi perencanaan, termasuk batasan tak terduga (lihat §1.3d) |
 | `docs/API_VERIFICATION.md` | Laporan hasil verifikasi terhadap data nyata (dihasilkan otomatis) |
 
@@ -76,7 +95,7 @@ scoring di atas fixture `out/api-samples/`, bukan API langsung.
 ## Menjalankan unit test scoring engine
 
 ```bash
-npm test    # 0 credit, memakai data mock — 63 test
+npm test    # 0 credit, memakai data mock — 75 test
 ```
 
 ## Membangun workflow n8n dari nol
@@ -88,6 +107,8 @@ node scripts/deploy-stage1-workflow.js
 node scripts/deploy-stage2-workflow.js
 node scripts/deploy-stage3-workflow.js
 node scripts/deploy-stage4-workflow.js
+node scripts/deploy-stage5-workflow.js
+node scripts/deploy-stage6-workflow.js
 ```
 
 Butuh kredensial berikut sudah dibuat di n8n (Settings → Credentials, atau lewat REST API —
@@ -102,6 +123,22 @@ Untuk test manual sebelum menjadwalkan (CLAUDE.md §6): tambahkan node Webhook s
 disambung sama seperti Schedule Trigger, aktifkan workflow, `curl` webhook-nya, cek hasil lewat
 `GET /api/v1/executions/{id}?includeData=true`, lalu hapus lagi node Webhook-nya. Jangan
 mengaktifkan Schedule Trigger sebelum tervalidasi manual.
+
+## Alternatif: impor workflow dari JSON
+
+Selain membangun lewat skrip, workflow lengkap tersedia sebagai ekspor JSON di
+`workflows/sectors-daily-watchlist-full-pipeline.json` (sudah termasuk node Manual Trigger untuk
+uji):
+
+1. Buat tiga credential di n8n seperti daftar di atas, lalu **Import from file** dan pilih
+   credential pada node yang menandainya.
+2. Ganti `REPLACE_WITH_TELEGRAM_CHAT_ID` di node **Send Telegram Message** dengan chat ID tujuan.
+3. Jalankan sekali lewat Manual Trigger (sekitar 38 credit Sectors), lalu aktifkan workflow agar
+   Schedule Trigger berjalan.
+
+Kode di node **Score Candidates** adalah salinan inline dari `src/scoring/` (Code node n8n tidak
+bisa mengimpor file lokal), jadi sinkronkan manual bila `src/scoring/` atau
+`config/scoring.config.json` berubah.
 
 ## Environment variables (`.env`)
 
